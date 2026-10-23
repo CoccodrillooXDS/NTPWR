@@ -11,6 +11,12 @@ for tool in "$CC" "$LD" python3; do
 done
 mkdir -p "$ROOT/build" "$ROOT/DIST"
 B="$ROOT/build"
+LINK_ROOT="$ROOT"
+LINK_B="$B"
+if [[ "${OSTYPE:-}" == msys* || -n "${MSYSTEM:-}" ]]; then
+    LINK_ROOT="$(cygpath -m "$ROOT")"
+    LINK_B="$(cygpath -m "$B")"
+fi
 "$CC" --target=i386-pc-windows-msvc -march=i486 -mno-sse -mno-sse2 \
   -ffreestanding -fno-builtin -fno-stack-protector -O1 -Wall -Wextra -Werror \
   -c "$ROOT/app/ntpwr.c" -o "$B/ntpwr_cli.obj"
@@ -92,8 +98,8 @@ EXPORTS
     MessageBoxA
 DEF
 for name in KERNEL32 ADVAPI32 USER32; do
-    "$LD" /nologo /machine:x86 /dll /noentry \
-        "/def:$B/${name}.DEF" "/out:$B/${name}.stub.dll"
+    MSYS2_ARG_CONV_EXCL="*" "$LD" /nologo /machine:x86 /dll /noentry \
+        "/def:$LINK_B/${name}.DEF" "/out:$LINK_B/${name}.stub.dll"
 done
 user_imports=(GetStdHandle:4 WriteFile:20 GetLastError:0 ExitProcess:4
   GetCommandLineA:0 GetModuleFileNameA:12 GetSystemDirectoryA:8
@@ -116,11 +122,11 @@ for imp in "${user_imports[@]}"; do
   name="${imp%:*}"; sz="${imp#*:}"
   user_aliases+=("/alternatename:__imp__${name}@${sz}=__imp__${name}")
 done
-"$LD" /nologo /machine:x86 /subsystem:windows,3.51 /osversion:3.51 \
+MSYS2_ARG_CONV_EXCL="*" "$LD" /nologo /machine:x86 /subsystem:windows,3.51 /osversion:3.51 \
   /entry:Entry /nodefaultlib /dynamicbase:no /nxcompat:no /safeseh:no \
-  "/out:$ROOT/DIST/NTPWR.EXE" "$B/ntpwr_cli.obj" \
-  "$B/ntpwr_remap.obj" "$B/ntpwr_service.obj" "$B/runtime.obj" \
-  "$B/KERNEL32.stub.lib" "$B/ADVAPI32.stub.lib" "$B/USER32.stub.lib" "${user_aliases[@]}"
+  "/out:$LINK_ROOT/DIST/NTPWR.EXE" "$LINK_B/ntpwr_cli.obj" \
+  "$LINK_B/ntpwr_remap.obj" "$LINK_B/ntpwr_service.obj" "$LINK_B/runtime.obj" \
+  "$LINK_B/KERNEL32.stub.lib" "$LINK_B/ADVAPI32.stub.lib" "$LINK_B/USER32.stub.lib" "${user_aliases[@]}"
 python3 - "$ROOT/DIST/NTPWR.EXE" <<'PYTHON'
 from pathlib import Path
 import struct,sys

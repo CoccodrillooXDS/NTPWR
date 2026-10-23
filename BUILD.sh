@@ -38,6 +38,12 @@ FLAGS=(--target=i386-pc-windows-msvc -march=i486 -mno-sse -mno-sse2
    -fms-extensions -O1 -nostdinc -isystem "$RDIR/include"
    -DUACPI_REDUCED_HARDWARE -DUACPI_NATIVE_MMIO)
 B="$ROOT/build"
+LINK_ROOT="$ROOT"
+LINK_B="$B"
+if [[ "${OSTYPE:-}" == msys* || -n "${MSYSTEM:-}" ]]; then
+    LINK_ROOT="$(cygpath -m "$ROOT")"
+    LINK_B="$(cygpath -m "$B")"
+fi
 ADAPTER=(nt351_early nt351_sync_timing nt351_io nt351_irq_spin
          nt351_pci nt351_work nt351_firmware_irq nt351_mmio_ro)
 "$CC" "${FLAGS[@]}" -c "$ROOT/runtime/nt351_runtime.c" -o "$B/runtime.obj"
@@ -56,7 +62,7 @@ UOBJS=()
 for name in "${SOURCES[@]}"; do
     "$CC" "${FLAGS[@]}" -I "$SRC/include" -I "$SRC/source" \
         -c "$SRC/source/$name.c" -o "$B/$name.obj"
-    UOBJS+=("$B/$name.obj")
+    UOBJS+=("$LINK_B/$name.obj")
     printf 'PASS  %s.c\n' "$name"
 done
 cat > "$B/NTOSKRNL.DEF" <<'DEF'
@@ -170,8 +176,8 @@ EXPORTS
     MessageBoxA
 DEF
 for name in NTOSKRNL HAL KERNEL32 ADVAPI32 USER32; do
-    "$LD" /nologo /machine:x86 /dll /noentry \
-        "/def:$B/${name}.DEF" "/out:$B/${name}.stub.dll"
+    MSYS2_ARG_CONV_EXCL="*" "$LD" /nologo /machine:x86 /dll /noentry \
+        "/def:$LINK_B/${name}.DEF" "/out:$LINK_B/${name}.stub.dll"
 done
 imports=(ExAllocatePoolWithTag:12 ExFreePool:4 MmMapIoSpace:16
          MmUnmapIoSpace:8 KeInitializeSemaphore:12 KeReleaseSemaphore:16
@@ -195,12 +201,12 @@ done
 # Fastcall import is explicitly declared as such in the original DDK.
 aliases+=("/alternatename:__imp_@IofCompleteRequest@8=__imp__IofCompleteRequest")
 AOBJS=()
-for module in "${ADAPTER[@]}"; do AOBJS+=("$B/$module.obj"); done
-"$LD" /nologo /dll /driver /machine:x86 /subsystem:native,3.51 \
+for module in "${ADAPTER[@]}"; do AOBJS+=("$LINK_B/$module.obj"); done
+MSYS2_ARG_CONV_EXCL="*" "$LD" /nologo /dll /driver /machine:x86 /subsystem:native,3.51 \
    /osversion:3.51 /entry:DriverEntry /nodefaultlib /dynamicbase:no \
    /nxcompat:no /safeseh:no /base:0x10000 /release \
-   "/out:$ROOT/DIST/NTPWR.SYS" "$B/ntpwr_drv.obj" "$B/runtime.obj" \
-   "${AOBJS[@]}" "$B/ntpwr_hook.obj" "$B/interlocked.obj" "${UOBJS[@]}" "$B/NTOSKRNL.stub.lib" "$B/HAL.stub.lib" "${aliases[@]}"
+   "/out:$LINK_ROOT/DIST/NTPWR.SYS" "$LINK_B/ntpwr_drv.obj" "$LINK_B/runtime.obj" \
+   "${AOBJS[@]}" "$LINK_B/ntpwr_hook.obj" "$LINK_B/interlocked.obj" "${UOBJS[@]}" "$LINK_B/NTOSKRNL.stub.lib" "$LINK_B/HAL.stub.lib" "${aliases[@]}"
 
 "$CC" --target=i386-pc-windows-msvc -march=i486 -mno-sse -mno-sse2 \
   -ffreestanding -fno-builtin -fno-stack-protector -O1 -Wall -Wextra -Werror \
@@ -229,10 +235,10 @@ for imp in "${user_imports[@]}"; do
   name="${imp%:*}"; sz="${imp#*:}"
   user_aliases+=("/alternatename:__imp__${name}@${sz}=__imp__${name}")
 done
-"$LD" /nologo /machine:x86 /subsystem:windows,3.51 /osversion:3.51 \
+MSYS2_ARG_CONV_EXCL="*" "$LD" /nologo /machine:x86 /subsystem:windows,3.51 /osversion:3.51 \
   /entry:Entry /nodefaultlib /dynamicbase:no /nxcompat:no /safeseh:no \
-  "/out:$ROOT/DIST/NTPWR.EXE" "$B/ntpwr_cli.obj" \
-  "$B/ntpwr_remap.obj" "$B/ntpwr_service.obj" "$B/runtime.obj" \
-  "$B/KERNEL32.stub.lib" "$B/ADVAPI32.stub.lib" "$B/USER32.stub.lib" "${user_aliases[@]}"
+  "/out:$LINK_ROOT/DIST/NTPWR.EXE" "$LINK_B/ntpwr_cli.obj" \
+  "$LINK_B/ntpwr_remap.obj" "$LINK_B/ntpwr_service.obj" "$LINK_B/runtime.obj" \
+  "$LINK_B/KERNEL32.stub.lib" "$LINK_B/ADVAPI32.stub.lib" "$LINK_B/USER32.stub.lib" "${user_aliases[@]}"
 python3 "$ROOT/tools/check_pe.py" "$ROOT/DIST/NTPWR.SYS" "$ROOT/DIST/NTPWR.EXE"
 echo "Build complete: DIST/NTPWR.SYS DIST/NTPWR.EXE"
