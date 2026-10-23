@@ -1,0 +1,27 @@
+# Generated build output
+/build/
+/DIST/
+/prebuilt/
+*.obj
+*.lib
+*.dll
+*.exe
+*.sys
+*.pdb
+*.ilk
+*.exp
+*.log
+
+# Local downloads and archives
+*.zip
+*.7z
+*.iso
+
+# Local/editor artifacts
+.DS_Store
+._*
+__MACOSX/
+*.swp
+*.swo
+.vscode/
+.idea/
