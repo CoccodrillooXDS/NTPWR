@@ -24,6 +24,8 @@ typedef LONG (__stdcall *DLGPROC)(HWND, UINT, WPARAM, LPARAM);
 #define FALSE 0
 #define MAX_PATH 260
 #define STD_OUTPUT_HANDLE ((DWORD)-11)
+#define STD_INPUT_HANDLE ((DWORD)-10)
+#define STD_ERROR_HANDLE ((DWORD)-12)
 #define SERVICE_KERNEL_DRIVER 1UL
 #define SERVICE_DEMAND_START 3UL
 #define SERVICE_AUTO_START 2UL
@@ -115,6 +117,8 @@ typedef struct PROBE {
 
 IMPORT HANDLE WINAPI GetStdHandle(DWORD);
 IMPORT BOOL WINAPI WriteFile(HANDLE, LPCSTR, DWORD, LPDWORD, LPVOID);
+IMPORT BOOL WINAPI ReadFile(HANDLE, LPVOID, DWORD, LPDWORD, LPVOID);
+IMPORT BOOL WINAPI AllocConsole(void);
 IMPORT DWORD WINAPI GetLastError(void);
 IMPORT void WINAPI ExitProcess(DWORD);
 IMPORT LPSTR WINAPI GetCommandLineA(void);
@@ -160,26 +164,73 @@ static DWORD g_pos;
 static HANDLE g_Output = (HANDLE)-1;
 static HANDLE g_FallbackLog = (HANDLE)-1;
 static BOOL g_CliMode = FALSE;
+static BOOL g_CliOutputRecovered = FALSE;
+static BOOL g_OwnConsole = FALSE;
+static HANDLE g_ConsoleFile = (HANDLE)-1;
 static char g_LastFailure[180];
 static DWORD g_LastErrorCode;
 
 
 static DWORD StringLength(LPCSTR s) { DWORD n=0; while(s[n]) ++n; return n; }
-static void Print(LPCSTR s) {
+static BOOL WriteOutput(HANDLE handle,LPCSTR s,DWORD length) {
     DWORD written=0;
+    return handle && handle!=(HANDLE)-1 &&
+        WriteFile(handle,s,length,&written,NULL) && written==length;
+}
+static void Print(LPCSTR s) {
     DWORD length=StringLength(s);
-    if (g_Output && g_Output!=(HANDLE)-1) {
-        if (WriteFile(g_Output,s,length,&written,NULL) && written==length)
-            return;
-        g_Output=(HANDLE)-1;
+    if(!length)return;
+    if(WriteOutput(g_Output,s,length))return;
+    if(g_CliMode && !g_CliOutputRecovered) {
+        HANDLE h;
+        g_CliOutputRecovered=TRUE;
+        h=GetStdHandle(STD_ERROR_HANDLE);
+        if(h!=g_Output && WriteOutput(h,s,length)){
+            g_Output=h;return;
+        }
+        h=CreateFileA("CONOUT$",GENERIC_WRITE,FILE_SHARE_WRITE,
+            NULL,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,NULL);
+        if(h && h!=(HANDLE)-1){
+            if(WriteOutput(h,s,length)){
+                g_ConsoleFile=h;g_Output=h;return;
+            }
+            CloseHandle(h);
+        }
+        if(AllocConsole()){
+            g_OwnConsole=TRUE;
+            h=GetStdHandle(STD_OUTPUT_HANDLE);
+            if(WriteOutput(h,s,length)){
+                g_Output=h;return;
+            }
+        }
     }
-    if (g_CliMode) {
-        if (g_FallbackLog==(HANDLE)-1)
+    g_Output=(HANDLE)-1;
+    if(g_CliMode) {
+        DWORD written=0;
+        if(g_FallbackLog==(HANDLE)-1)
             g_FallbackLog=CreateFileA("NTPWR-CLI.LOG",GENERIC_WRITE,
                 FILE_SHARE_READ,NULL,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,NULL);
-        if (g_FallbackLog && g_FallbackLog!=(HANDLE)-1)
+        if(g_FallbackLog && g_FallbackLog!=(HANDLE)-1)
             WriteFile(g_FallbackLog,s,length,&written,NULL);
     }
+}
+static void CliExit(DWORD status) {
+    if(g_OwnConsole) {
+        HANDLE input=GetStdHandle(STD_INPUT_HANDLE);
+        DWORD read=0;
+        char c;
+        Print("Press Enter to close.\r\n");
+        if(input && input!=(HANDLE)-1) {
+            do {
+                if(!ReadFile(input,&c,1,&read,NULL) || !read)break;
+            } while(c!='\r' && c!='\n');
+        }
+    }
+    if(g_ConsoleFile && g_ConsoleFile!=(HANDLE)-1)
+        CloseHandle(g_ConsoleFile);
+    if(g_FallbackLog && g_FallbackLog!=(HANDLE)-1)
+        CloseHandle(g_FallbackLog);
+    ExitProcess(status);
 }
 static void SetFailure(LPCSTR reason,DWORD code) {
     DWORD i=0;
@@ -733,11 +784,9 @@ void __cdecl Entry(void){
        !Equals(arg,"REMOVE")&&!Equals(arg,"STATUS")&&!Equals(arg,"SCAN")&&
        !Equals(arg,"INFO")&&!Equals(arg,"RESULT")){
         Print("Usage: NTPWR [SCAN|INFO|INSTALL|START|STATUS|STOP|REMOVE]\r\n");
-        ExitProcess(2);
+        CliExit(2);
     }
     ResetFailure();
     ok=Run(arg);
-    if(g_FallbackLog && g_FallbackLog!=(HANDLE)-1)
-        CloseHandle(g_FallbackLog);
-    ExitProcess(ok?0:1);
+    CliExit(ok?0:1);
 }

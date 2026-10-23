@@ -31,6 +31,8 @@ LIBRARY KERNEL32.DLL
 EXPORTS
     GetStdHandle
     WriteFile
+    ReadFile
+    AllocConsole
     GetLastError
     ExitProcess
     GetCommandLineA
@@ -101,7 +103,7 @@ for name in KERNEL32 ADVAPI32 USER32; do
     MSYS2_ARG_CONV_EXCL="*" "$LD" /nologo /machine:x86 /dll /noentry \
         "/def:$LINK_B/${name}.DEF" "/out:$LINK_B/${name}.stub.dll"
 done
-user_imports=(GetStdHandle:4 WriteFile:20 GetLastError:0 ExitProcess:4
+user_imports=(GetStdHandle:4 WriteFile:20 ReadFile:20 AllocConsole:0 GetLastError:0 ExitProcess:4
   GetCommandLineA:0 GetModuleFileNameA:12 GetSystemDirectoryA:8
   CopyFileA:12 DeleteFileA:4 Sleep:4 GetModuleHandleA:4 GetVersionExA:4
   CloseHandle:4 CreateFileA:28 DeviceIoControl:32 GetCurrentProcess:0
