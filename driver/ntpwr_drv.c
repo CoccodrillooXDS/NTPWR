@@ -108,7 +108,7 @@ static void ReportGas(const char *name, const struct acpi_gas *gas,
         offset = 0;
         access = 0;
     }
-    DbgPrint("NTPWR: %s space=%lu address=0x%08lX%08lX width=%lu offset=%lu access=%lu\\n",
+    DbgPrint("NTPWR: %s space=%lu address=0x%08lX%08lX width=%lu offset=%lu access=%lu\n",
              name, (unsigned long)space,
              (unsigned long)(address >> 32), (unsigned long)address,
              (unsigned long)width, (unsigned long)offset, (unsigned long)access);
@@ -116,7 +116,7 @@ static void ReportGas(const char *name, const struct acpi_gas *gas,
 
 static void ReportFadt(const struct acpi_fadt *fadt)
 {
-    DbgPrint("NTPWR: FADT revision=%lu length=%lu flags=0x%08lX hardware-reduced=%lu\\n",
+    DbgPrint("NTPWR: FADT revision=%lu length=%lu flags=0x%08lX hardware-reduced=%lu\n",
              (unsigned long)fadt->hdr.revision, (unsigned long)fadt->hdr.length,
              (unsigned long)fadt->flags,
              (unsigned long)((fadt->flags & ACPI_HW_REDUCED_ACPI) != 0));
