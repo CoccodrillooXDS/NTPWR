@@ -93,6 +93,43 @@ void __stdcall NtpwrProbeCleanup(void)
     DbgPrint("NTPWR: unloaded\n");
 }
 
+static void ReportGas(const char *name, const struct acpi_gas *gas,
+                      uacpi_u32 legacy, uacpi_u8 legacy_length)
+{
+    uacpi_u64 address = gas->address;
+    uacpi_u32 space = gas->address_space_id;
+    uacpi_u32 width = gas->register_bit_width;
+    uacpi_u32 offset = gas->register_bit_offset;
+    uacpi_u32 access = gas->access_size;
+    if (!address && legacy) {
+        address = legacy;
+        space = UACPI_ADDRESS_SPACE_SYSTEM_IO;
+        width = (uacpi_u32)legacy_length * 8U;
+        offset = 0;
+        access = 0;
+    }
+    DbgPrint("NTPWR: %s space=%lu address=0x%08lX%08lX width=%lu offset=%lu access=%lu\\n",
+             name, (unsigned long)space,
+             (unsigned long)(address >> 32), (unsigned long)address,
+             (unsigned long)width, (unsigned long)offset, (unsigned long)access);
+}
+
+static void ReportFadt(const struct acpi_fadt *fadt)
+{
+    DbgPrint("NTPWR: FADT revision=%lu length=%lu flags=0x%08lX hardware-reduced=%lu\\n",
+             (unsigned long)fadt->hdr.revision, (unsigned long)fadt->hdr.length,
+             (unsigned long)fadt->flags,
+             (unsigned long)((fadt->flags & ACPI_HW_REDUCED_ACPI) != 0));
+    ReportGas("PM1a_CNT", &fadt->x_pm1a_cnt_blk,
+              fadt->pm1a_cnt_blk, fadt->pm1_cnt_len);
+    ReportGas("PM1b_CNT", &fadt->x_pm1b_cnt_blk,
+              fadt->pm1b_cnt_blk, fadt->pm1_cnt_len);
+    if (fadt->flags & ACPI_HW_REDUCED_ACPI) {
+        ReportGas("SLP_CNT", &fadt->sleep_control_reg, 0, 0);
+        ReportGas("SLP_STS", &fadt->sleep_status_reg, 0, 0);
+    }
+}
+
 NT351_LONG __stdcall NtpwrProbeInitialize(NT_DRIVER_OBJECT_PREFIX *driver,
                                  NT_UNICODE_STRING *registry_path)
 {
@@ -176,6 +213,8 @@ NT351_LONG __stdcall NtpwrProbeInitialize(NT_DRIVER_OBJECT_PREFIX *driver,
         struct acpi_fadt *fadt = UACPI_NULL;
         uacpi_phys_addr rsdp_addr = 0;
         const uacpi_u8 *rsdp = UACPI_NULL;
+        if (uacpi_table_fadt(&fadt) == UACPI_STATUS_OK && fadt)
+            ReportFadt(fadt);
         if (uacpi_table_fadt(&fadt) == UACPI_STATUS_OK && fadt &&
             fadt->pm1a_cnt_blk == 0x604 && fadt->pm1b_cnt_blk == 0 &&
             fadt->pm1_cnt_len == 2 && fadt->smi_cmd == 0xB2 &&
