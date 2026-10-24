@@ -46,6 +46,15 @@ static VOID PvLogHex(ULONG V)
                          (UCHAR)H[(V >> (I * 4)) & 15UL]);
 }
 
+void __cdecl NtpwrTraceAcpiStatus(const char *Stage, ULONG Status)
+{
+    PvLog("NTPWR: ACPI ");
+    PvLog(Stage);
+    PvLog(" status=");
+    PvLogHex(Status);
+    PvLog("\r\n");
+}
+
 static BOOLEAN PvMapped(PUCHAR P, ULONG Count)
 {
     ULONG I;
@@ -286,11 +295,14 @@ static VOID __stdcall PvHalHook(ULONG Routine)
     else if (Routine == 3) PvLog(" (REBOOT)");
     PvLog("\r\n");
 
-    if (Routine == 1 && NtpwrAcpiPowerOff()) {
-        PvLog("NTPWR: ACPI S5 issued\r\n");
-        for (;;) {
-            __asm__ __volatile__("cli\n\thlt" : : : "memory");
+    if (Routine == 1) {
+        if (NtpwrAcpiPowerOff()) {
+            PvLog("NTPWR: ACPI S5 issued\r\n");
+            for (;;) {
+                __asm__ __volatile__("cli\n\thlt" : : : "memory");
+            }
         }
+        PvLog("NTPWR: ACPI S5 unavailable; HAL fallback\r\n");
     }
     if (g_Original != NULL) g_Original(Routine);
 }

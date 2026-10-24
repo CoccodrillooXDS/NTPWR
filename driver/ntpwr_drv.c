@@ -56,6 +56,7 @@ static uacpi_bool g_namespace_loaded = UACPI_FALSE;
 static int g_power_ready = 0;
 static int g_reduced = 0;
 static uacpi_u8 g_slp_a, g_slp_b;
+extern void __cdecl NtpwrTraceAcpiStatus(const char *, unsigned long);
 
 int NtpwrAcpiReady(void) { return g_power_ready; }
 
@@ -288,12 +289,29 @@ int NtpwrAcpiPowerOff(void)
                                    ((uacpi_u64)g_slp_a << 2) | 0x20U);
     } else {
         ret = uacpi_read_register_field(UACPI_REGISTER_FIELD_SCI_EN, &sci);
-        if (ret != UACPI_STATUS_OK || !sci) {
-            DbgPrint("NTPWR: ACPI mode inactive\n");
+        if (ret != UACPI_STATUS_OK) {
+            NtpwrTraceAcpiStatus("mode read failed", (unsigned long)ret);
             return 0;
         }
+        if (!sci) {
+            ret = uacpi_enter_acpi_mode();
+            if (ret != UACPI_STATUS_OK) {
+                NtpwrTraceAcpiStatus("mode transition failed", (unsigned long)ret);
+                return 0;
+            }
+            ret = uacpi_read_register_field(UACPI_REGISTER_FIELD_SCI_EN, &sci);
+            if (ret != UACPI_STATUS_OK || !sci) {
+                NtpwrTraceAcpiStatus("mode verification failed",
+                                     (unsigned long)ret);
+                return 0;
+            }
+            NtpwrTraceAcpiStatus("mode enabled", 0);
+        }
         ret = uacpi_read_register(UACPI_REGISTER_PM1_CNT, &current);
-        if (ret != UACPI_STATUS_OK) return 0;
+        if (ret != UACPI_STATUS_OK) {
+            NtpwrTraceAcpiStatus("PM1 read failed", (unsigned long)ret);
+            return 0;
+        }
         current &= ~0x3C00ULL;
         a = current | ((uacpi_u64)g_slp_a << 10);
         b = current | ((uacpi_u64)g_slp_b << 10);
@@ -303,7 +321,7 @@ int NtpwrAcpiPowerOff(void)
                                         a | 0x2000U, b | 0x2000U);
     }
     if (ret != UACPI_STATUS_OK) {
-        DbgPrint("NTPWR: ACPI S5 failed status=%lu\n", (unsigned long)ret);
+        NtpwrTraceAcpiStatus("S5 write failed", (unsigned long)ret);
         return 0;
     }
     return 1;
