@@ -56,7 +56,6 @@ static uacpi_bool g_namespace_loaded = UACPI_FALSE;
 static int g_power_ready = 0;
 static int g_reduced = 0;
 static uacpi_u8 g_slp_a, g_slp_b;
-static uacpi_u64 g_pm1a, g_pm1b;
 
 int NtpwrAcpiReady(void) { return g_power_ready; }
 
