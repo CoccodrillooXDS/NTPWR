@@ -2,7 +2,7 @@
 
 NTPWR provides automatic power-off support for legacy Windows NT systems. It uses uACPI to inspect firmware ACPI tables and evaluate AML, with a kernel shutdown hook and a Winlogon service to handle power-off while preserving restart behavior. The shutdown-hook implementation is adapted from [QEMUPWR](https://github.com/CoccodrillooXDS/QEMUPWR).
 
-The current ACPI S5 backend supports a specific QEMU PIIX4 firmware configuration. Generic ACPI and APM power-off are not yet supported.
+The ACPI S5 backend uses firmware-provided FADT registers and AML without QEMU-specific checks. Automatic S5 preparation is coordinated with Winlogon. APM is not implemented.
 
 ## Compatibility
 
@@ -10,7 +10,7 @@ The current ACPI S5 backend supports a specific QEMU PIIX4 firmware configuratio
 - **Windows NT 4.0 SP6 (x86):** shutdown and restart on QEMU PIIX4.
 - **Other NT versions:** unsupported until their kernel interfaces and shutdown paths have been validated.
 
-The current kernel hook recognizes specific NT 3.51 and NT 4.0 kernel profiles. The ACPI power-off backend requires the expected BOCHS/BXPC firmware and PM1 register configuration. Other configurations retain the original HAL behavior rather than attempting an unsupported power-off.
+The kernel hook recognizes specific NT 3.51 and NT 4.0 kernel profiles. The ACPI power-off path has been tested with QEMU PIIX4 firmware; compatibility with other ACPI firmware is not established. Unsupported configurations fall back to the original HAL.
 
 ## Components
 
@@ -78,9 +78,10 @@ Use a VM snapshot when evaluating an untested operating system or firmware confi
 
 ## Limitations
 
-- S5 power-off is currently limited to the validated QEMU PIIX4 firmware profile; firmware-independent FADT/GAS handling is not implemented.
-- AML shutdown preparation methods such as `_PTS` and `_GTS` are not executed.
-- The uACPI adapter runs in reduced-hardware mode, without the full ACPI event and hardware-access subsystem.
+- FADT/GAS-based S5 power-off has been validated only on the listed QEMU guests, not on physical systems or other firmware.
+- Winlogon triggers uACPI S5 preparation, including `_PTS(5)`, before the final HAL powerdown.
+- SCI/GPE event handling is omitted; this is not a general-purpose ACPI device driver.
+- The firmware `_GTS` method is not currently invoked.
 - The APM backend is not implemented.
 - Compatibility outside the listed Windows NT kernel profiles is not established.
 

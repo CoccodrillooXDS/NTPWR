@@ -386,27 +386,17 @@ static BOOL ReadProbe(PROBE *p) {
         ReadDword(key,"S5TypeB",&p->b);
     RegCloseKey(key);return p->scanned;
 }
-static BOOL KernelRequest(DWORD action,void *out,DWORD output_size) {
+static BOOL KernelHook(DWORD action,NTPWR_REPORT *out) {
     HANDLE d=CreateFileA("\\\\.\\NTPWR",GENERIC_READ|GENERIC_WRITE,
         FILE_SHARE_READ|FILE_SHARE_WRITE,NULL,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,NULL);
     DWORD count=0;
     BOOL ok;
     if(!d || d==(HANDLE)-1)return FALSE;
-    ok=DeviceIoControl(d,action,NULL,0,out,output_size,&count,NULL);
-    if(ok && out && count!=output_size)ok=FALSE;
+    ok=DeviceIoControl(d,action,NULL,0,out,
+        out?(DWORD)sizeof(*out):0,&count,NULL);
+    if(ok&&out&&count!=sizeof(*out))ok=FALSE;
     CloseHandle(d);
     return ok;
-}
-static BOOL KernelHook(DWORD action,NTPWR_REPORT *out) {
-    return KernelRequest(action,out,out?(DWORD)sizeof(*out):0);
-}
-static BOOL KernelPrepare(void) {
-    DWORD status=0xFFFFFFFFUL;
-    if(!KernelRequest(NTPWR_IOCTL_PREPARE_S5,&status,sizeof(status))){
-        Error("NTPWR S5 preparation");return FALSE;
-    }
-    Print("NTPWR: S5 preparation status=");PrintHex(status);Print("\r\n");
-    return status==0;
 }
 static BOOL QueryHook(PROBE *p) {
     NTPWR_REPORT report;
@@ -585,7 +575,6 @@ static BOOL Run(LPCSTR action) {
     else if(Equals(action,"START"))ok=Start(m);
     else if(Equals(action,"STOP"))ok=Stop(m);
     else if(Equals(action,"REMOVE"))ok=RemoveFull(m);
-    else if(Equals(action,"PREPARE"))ok=KernelPrepare();
     else if(Equals(action,"SCAN")){
         ok=Scan(m,&g_probe);PrintProbe(&g_probe);
     }else if(Equals(action,"INFO")||Equals(action,"RESULT")){
@@ -765,8 +754,8 @@ void __cdecl Entry(void){
     }
     if(!Equals(arg,"INSTALL")&&!Equals(arg,"START")&&!Equals(arg,"STOP")&&
        !Equals(arg,"REMOVE")&&!Equals(arg,"STATUS")&&!Equals(arg,"SCAN")&&
-       !Equals(arg,"INFO")&&!Equals(arg,"RESULT")&&!Equals(arg,"PREPARE")){
-        Print("Usage: NTPWR [SCAN|INFO|INSTALL|START|STATUS|STOP|REMOVE|PREPARE]\r\n");
+       !Equals(arg,"INFO")&&!Equals(arg,"RESULT")){
+        Print("Usage: NTPWR [SCAN|INFO|INSTALL|START|STATUS|STOP|REMOVE]\r\n");
         CliExit(2);
     }
     ResetFailure();

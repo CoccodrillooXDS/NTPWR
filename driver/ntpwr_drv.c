@@ -209,7 +209,6 @@ NT351_LONG __stdcall NtpwrProbeInitialize(NT_DRIVER_OBJECT_PREFIX *driver,
     SetDword(key, s_a, 7, 0xFFFFFFFFUL);
     SetDword(key, s_b, 7, 0xFFFFFFFFUL);
 
-    /* Passive AML diagnostics; ACPI mode and SCI handling remain disabled. */
     init_status = uacpi_initialize(UACPI_FLAG_NO_ACPI_MODE);
     SetDword(key, s_init, 10, (uacpi_u32)init_status);
     if (init_status != UACPI_STATUS_OK) {
@@ -299,6 +298,10 @@ int NtpwrAcpiPowerOff(void)
     uacpi_u64 current, a, b, sci;
     uacpi_status ret;
     if (!g_power_ready) return 0;
+    if (!g_s5_prepared) {
+        NtpwrTraceAcpiStatus("S5 not prepared", 0);
+        return 0;
+    }
     if (g_reduced) {
         ret = uacpi_write_register(UACPI_REGISTER_SLP_CNT,
                                    ((uacpi_u64)g_slp_a << 2) | 0x20U);
