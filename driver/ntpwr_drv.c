@@ -2,6 +2,7 @@
 #include <uacpi/types.h>
 #include <uacpi/tables.h>
 #include <uacpi/acpi.h>
+#include <uacpi/registers.h>
 #include "nt351_kernel_abi.h"
 
 /* ABI-compatible declarations for the NT 3.51 driver interface. */
@@ -53,6 +54,9 @@ __declspec(dllimport) NT351_LONG __stdcall ZwClose(NT_HANDLE key);
 
 static uacpi_bool g_namespace_loaded = UACPI_FALSE;
 static int g_power_ready = 0;
+static int g_reduced = 0;
+static uacpi_u8 g_slp_a, g_slp_b;
+static uacpi_u64 g_pm1a, g_pm1b;
 
 int NtpwrAcpiReady(void) { return g_power_ready; }
 
@@ -86,6 +90,7 @@ static const NT_WCHAR s_b[] = {'S','5','T','y','p','e','B',0};
 void __stdcall NtpwrProbeCleanup(void)
 {
     g_power_ready = 0;
+    g_reduced = 0;
     if (g_namespace_loaded) {
         uacpi_state_reset();
         g_namespace_loaded = UACPI_FALSE;
@@ -128,6 +133,38 @@ static void ReportFadt(const struct acpi_fadt *fadt)
         ReportGas("SLP_CNT", &fadt->sleep_control_reg, 0, 0);
         ReportGas("SLP_STS", &fadt->sleep_status_reg, 0, 0);
     }
+}
+
+static int ValidGas(const struct acpi_gas *g, uacpi_u32 width)
+{
+    if (!g->address || g->register_bit_width < width || g->register_bit_offset)
+        return 0;
+    if (g->address_space_id == UACPI_ADDRESS_SPACE_SYSTEM_IO)
+        return g->address <= 0x10000ULL - (width / 8U);
+    return g->address_space_id == UACPI_ADDRESS_SPACE_SYSTEM_MEMORY;
+}
+
+static int SetupS5(const struct acpi_fadt *f)
+{
+    uacpi_u64 value;
+    uacpi_status ret;
+    g_reduced = (f->flags & ACPI_HW_REDUCED_ACPI) != 0;
+    if (g_reduced) {
+        if (!ValidGas(&f->sleep_control_reg, 8) ||
+            !ValidGas(&f->sleep_status_reg, 8)) return 0;
+        ret = uacpi_read_register(UACPI_REGISTER_SLP_CNT, &value);
+    } else {
+        if (!ValidGas(&f->x_pm1a_cnt_blk, 16) ||
+            (f->x_pm1b_cnt_blk.address && !ValidGas(&f->x_pm1b_cnt_blk, 16)))
+            return 0;
+        ret = uacpi_read_register(UACPI_REGISTER_PM1_CNT, &value);
+    }
+    if (ret != UACPI_STATUS_OK) {
+        DbgPrint("NTPWR: ACPI register mapping failed status=%lu\n",
+                 (unsigned long)ret);
+        return 0;
+    }
+    return 1;
 }
 
 NT351_LONG __stdcall NtpwrProbeInitialize(NT_DRIVER_OBJECT_PREFIX *driver,
@@ -211,31 +248,11 @@ NT351_LONG __stdcall NtpwrProbeInitialize(NT_DRIVER_OBJECT_PREFIX *driver,
     stage = 4;
     {
         struct acpi_fadt *fadt = UACPI_NULL;
-        uacpi_phys_addr rsdp_addr = 0;
-        const uacpi_u8 *rsdp = UACPI_NULL;
-        if (uacpi_table_fadt(&fadt) == UACPI_STATUS_OK && fadt)
+        if (uacpi_table_fadt(&fadt) == UACPI_STATUS_OK && fadt) {
             ReportFadt(fadt);
-        if (uacpi_table_fadt(&fadt) == UACPI_STATUS_OK && fadt &&
-            fadt->pm1a_cnt_blk == 0x604 && fadt->pm1b_cnt_blk == 0 &&
-            fadt->pm1_cnt_len == 2 && fadt->smi_cmd == 0xB2 &&
-            fadt->acpi_enable == 0xF1 && fadt->acpi_disable == 0xF0 &&
-            fadt->hdr.oemid[0] == 'B' && fadt->hdr.oemid[1] == 'O' &&
-            fadt->hdr.oemid[2] == 'C' && fadt->hdr.oemid[3] == 'H' &&
-            fadt->hdr.oemid[4] == 'S' && fadt->hdr.oemid[5] == ' ' &&
-            fadt->hdr.oem_table_id[0] == 'B' &&
-            fadt->hdr.oem_table_id[1] == 'X' &&
-            fadt->hdr.oem_table_id[2] == 'P' &&
-            fadt->hdr.oem_table_id[3] == 'C' &&
-            a == 0 && b == 0 &&
-            uacpi_kernel_get_rsdp(&rsdp_addr) == UACPI_STATUS_OK) {
-            rsdp = (const uacpi_u8 *)uacpi_kernel_map(rsdp_addr, 20);
-            if (rsdp != (const uacpi_u8 *)UACPI_MAP_FAILED &&
-                rsdp[9] == 'B' && rsdp[10] == 'O' &&
-                rsdp[11] == 'C' && rsdp[12] == 'H' &&
-                rsdp[13] == 'S' && rsdp[14] == ' ')
-                g_power_ready = 1;
-            if (rsdp != (const uacpi_u8 *)UACPI_MAP_FAILED)
-                uacpi_kernel_unmap((void *)rsdp, 20);
+            g_slp_a = (uacpi_u8)a;
+            g_slp_b = (uacpi_u8)b;
+            g_power_ready = SetupS5(fadt);
         }
     }
     DbgPrint("NTPWR: S5 package=%lu slp_typa=%lu slp_typb=%lu\n",
@@ -252,21 +269,33 @@ done:
     return NT_STATUS_SUCCESS;
 }
 
-/* The shutdown hook calls this only for a validated BOCHS/BXPC PIIX4 VM. */
 int NtpwrAcpiPowerOff(void)
 {
-    unsigned short state;
-    unsigned i;
+    uacpi_u64 current, a, b, sci;
+    uacpi_status ret;
     if (!g_power_ready) return 0;
-    state = READ_PORT_USHORT((unsigned short *)0x604);
-    if ((state & 1U) == 0) {
-        WRITE_PORT_UCHAR((unsigned char *)0xB2, 0xF1);
-        for (i = 0; i < 1000; i++) {
-            state = READ_PORT_USHORT((unsigned short *)0x604);
-            if (state & 1U) break;
+    if (g_reduced) {
+        ret = uacpi_write_register(UACPI_REGISTER_SLP_CNT,
+                                   ((uacpi_u64)g_slp_a << 2) | 0x20U);
+    } else {
+        ret = uacpi_read_register_field(UACPI_REGISTER_FIELD_SCI_EN, &sci);
+        if (ret != UACPI_STATUS_OK || !sci) {
+            DbgPrint("NTPWR: ACPI mode inactive\n");
+            return 0;
         }
+        ret = uacpi_read_register(UACPI_REGISTER_PM1_CNT, &current);
+        if (ret != UACPI_STATUS_OK) return 0;
+        current &= ~0x3C00ULL;
+        a = current | ((uacpi_u64)g_slp_a << 10);
+        b = current | ((uacpi_u64)g_slp_b << 10);
+        ret = uacpi_write_registers(UACPI_REGISTER_PM1_CNT, a, b);
+        if (ret == UACPI_STATUS_OK)
+            ret = uacpi_write_registers(UACPI_REGISTER_PM1_CNT,
+                                        a | 0x2000U, b | 0x2000U);
     }
-    if (state != 0x0001U) return 0;
-    WRITE_PORT_USHORT((unsigned short *)0x604, 0x2001);
+    if (ret != UACPI_STATUS_OK) {
+        DbgPrint("NTPWR: ACPI S5 failed status=%lu\n", (unsigned long)ret);
+        return 0;
+    }
     return 1;
 }

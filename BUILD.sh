@@ -36,7 +36,7 @@ RDIR="$("$CC" -print-resource-dir)"
 FLAGS=(--target=i386-pc-windows-msvc -march=i486 -mno-sse -mno-sse2
    -std=gnu11 -ffreestanding -fno-builtin -fno-stack-protector
    -fms-extensions -O1 -nostdinc -isystem "$RDIR/include"
-   -DUACPI_REDUCED_HARDWARE -DUACPI_NATIVE_MMIO)
+   -DUACPI_NATIVE_MMIO)
 B="$ROOT/build"
 LINK_ROOT="$ROOT"
 LINK_B="$B"
