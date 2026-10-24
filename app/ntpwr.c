@@ -562,7 +562,7 @@ static void PrintProbe(const PROBE *p) {
         Print(" eval=");PrintHex(p->eval);Print("\r\n");
     }
     Print("NTPWR: APM not implemented\r\n");
-    Print("NTPWR: ACPI QEMU PIIX4 ");Print(p->backend?"ready\r\n":"not ready\r\n");
+    Print("NTPWR: ACPI S5 ");Print(p->backend?"registers mapped\r\n":"not ready\r\n");
 }
 static BOOL Run(LPCSTR action) {
     SC_HANDLE m=Manager();BOOL ok=FALSE;
@@ -648,7 +648,7 @@ static void UpdateMain(HWND wnd){
     Text(wnd,IDC_DRIVER,g_probe.installed?(g_probe.running?"Running":"Installed (stopped)"):"Not installed");
     Text(wnd,IDC_ACPI,!g_probe.scanned?"Not scanned":g_probe.stage==4?"Detected, AML initialized":"Scan incomplete");
     Text(wnd,IDC_APM,"Not implemented");
-    Text(wnd,IDC_METHOD,g_probe.backend?"ACPI S5 (QEMU PIIX4)":"None");
+    Text(wnd,IDC_METHOD,g_probe.backend?"ACPI S5":"None");
     Text(wnd,IDC_POWER,g_probe.hook_active?"Enabled":"Disabled");
     EnableWindow(GetDlgItem(wnd,IDC_INSTALL),!g_probe.installed);
     EnableWindow(GetDlgItem(wnd,IDC_REMOVE),g_probe.installed);
@@ -680,7 +680,7 @@ static void UpdateInfo(HWND wnd){
         Text(wnd,IDC_S5,s);
     }
     Text(wnd,IDC_APMDETAIL,"Not implemented");
-    Text(wnd,IDC_BACKEND,g_probe.backend?"ACPI S5 (QEMU PIIX4)":"Unsupported");
+    Text(wnd,IDC_BACKEND,g_probe.backend?"ACPI S5 registers mapped":"Unsupported");
     Text(wnd,IDC_HOOK,g_probe.hook_active?"Active":"Inactive");
 }
 static BOOL Refresh(void){
