@@ -162,12 +162,21 @@ static void SetupReset(const struct acpi_fadt *f)
     const struct acpi_gas *reg = &f->reset_reg;
     uacpi_status status;
 
-    if (!(f->flags & ACPI_RESET_REG_SUP) || !reg->address ||
-        reg->register_bit_width != 8 || reg->register_bit_offset ||
+    if (!(f->flags & ACPI_RESET_REG_SUP)) {
+        NtpwrTraceAcpiEvent("reset unavailable: RESET_REG_SUP not set");
+        return;
+    }
+    if (!reg->address) {
+        NtpwrTraceAcpiEvent("reset unavailable: RESET_REG missing");
+        return;
+    }
+    if (reg->register_bit_width != 8 || reg->register_bit_offset ||
         reg->access_size > 1 ||
         (reg->address_space_id != UACPI_ADDRESS_SPACE_SYSTEM_IO &&
-         reg->address_space_id != UACPI_ADDRESS_SPACE_SYSTEM_MEMORY))
+         reg->address_space_id != UACPI_ADDRESS_SPACE_SYSTEM_MEMORY)) {
+        NtpwrTraceAcpiEvent("reset unavailable: unsupported RESET_REG");
         return;
+    }
 
     status = uacpi_map_gas(reg, &g_reset_reg);
     if (status != UACPI_STATUS_OK) {
@@ -176,6 +185,7 @@ static void SetupReset(const struct acpi_fadt *f)
         return;
     }
     g_reset_value = f->reset_value;
+    NtpwrTraceAcpiEvent("reset ready");
     DbgPrint("NTPWR: ACPI reset mapped space=%lu address=0x%08lX%08lX value=0x%02lX\n",
              (unsigned long)reg->address_space_id,
              (unsigned long)(reg->address >> 32), (unsigned long)reg->address,
