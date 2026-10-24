@@ -3,6 +3,7 @@
 
 #define NT351_INTERRUPT_TAG 0x49504155UL
 #define NT351_INTERNAL_BUS 0UL
+#define NT351_ISA_BUS 1UL
 #define NT351_LEVEL_SENSITIVE 0UL
 
 static NT351_U32 g_sci_phase;
@@ -67,6 +68,14 @@ uacpi_status __cdecl uacpi_kernel_install_interrupt_handler(
 
     vector = HalGetInterruptVector(NT351_INTERNAL_BUS, 0, irq, irq,
                                    &irql, &affinity);
+    if (!vector || !affinity) {
+        irql = 0;
+        affinity = 0;
+        vector = HalGetInterruptVector(NT351_ISA_BUS, 0, irq, irq,
+                                       &irql, &affinity);
+        if (vector && affinity)
+            DbgPrint("NTPWR: SCI IRQ=%lu mapped via ISA\n", (unsigned long)irq);
+    }
     g_sci_vector = vector;
     if (!vector || !affinity) {
         g_sci_phase = 1;
