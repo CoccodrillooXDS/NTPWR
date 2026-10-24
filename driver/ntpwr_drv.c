@@ -3,6 +3,7 @@
 #include <uacpi/tables.h>
 #include <uacpi/acpi.h>
 #include <uacpi/registers.h>
+#include <uacpi/sleep.h>
 #include "nt351_kernel_abi.h"
 
 /* ABI-compatible declarations for the NT 3.51 driver interface. */
@@ -54,6 +55,7 @@ __declspec(dllimport) NT351_LONG __stdcall ZwClose(NT_HANDLE key);
 
 static uacpi_bool g_namespace_loaded = UACPI_FALSE;
 static int g_power_ready = 0;
+static int g_s5_prepared = 0;
 static int g_reduced = 0;
 static uacpi_u8 g_slp_a, g_slp_b;
 extern void __cdecl NtpwrTraceAcpiStatus(const char *, unsigned long);
@@ -91,6 +93,7 @@ static const NT_WCHAR s_b[] = {'S','5','T','y','p','e','B',0};
 void __stdcall NtpwrProbeCleanup(void)
 {
     g_power_ready = 0;
+    g_s5_prepared = 0;
     g_reduced = 0;
     if (g_namespace_loaded) {
         uacpi_state_reset();
@@ -277,6 +280,18 @@ done:
                  (unsigned long)load_status, (unsigned long)namespace_status,
                  (unsigned long)eval_status);
     return NT_STATUS_SUCCESS;
+}
+
+unsigned long NtpwrAcpiPrepare(void)
+{
+    uacpi_status status;
+    if (!g_power_ready) return UACPI_STATUS_INIT_LEVEL_MISMATCH;
+    if (g_s5_prepared) return UACPI_STATUS_OK;
+
+    status = uacpi_prepare_for_sleep_state(UACPI_SLEEP_STATE_S5);
+    if (status == UACPI_STATUS_OK) g_s5_prepared = 1;
+    NtpwrTraceAcpiStatus("S5 preparation", (unsigned long)status);
+    return (unsigned long)status;
 }
 
 int NtpwrAcpiPowerOff(void)
