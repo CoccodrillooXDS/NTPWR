@@ -453,8 +453,7 @@ static BOOL CheckImage(HANDLE Process, DWORD Base, DWORD Patch,
     StoreDword(Jump, 1, AllocAddress - (Patch + 5UL));
     if (!ReplaceCode(Process, Patch, Jump, Original, sizeof(Jump))) {
         Out("PATCH failed.\r\n");
-        CloseRemoteHandle(Process, RemoteHandle);
-        /* Keep the trampoline allocated if the patch may still reference it. */
+        /* Retain the handle if the remote trampoline could still execute. */
         return TRUE;
     }
     if (!Read(Process, Patch, Site, sizeof(Site)) ||
