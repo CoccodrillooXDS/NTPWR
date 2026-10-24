@@ -58,10 +58,30 @@ done
 "$CC" "${FLAGS[@]}" -c "$ROOT/driver/nt351_interlocked.c" -o "$B/interlocked.obj"
 SOURCES=(tables types uacpi utilities interpreter opcodes namespace stdlib
   opregion default_handlers io notify sleep registers resources event mutex osi)
+UACPI_S5_SOURCE="$B/ntpwr_uacpi.c"
+python3 - "$SRC/source/uacpi.c" "$UACPI_S5_SOURCE" <<'PY'
+from pathlib import Path
+import sys
+
+source = Path(sys.argv[1]).read_text()
+start = "    ret = uacpi_initialize_events();\n"
+end = "    g_uacpi_rt_ctx.init_level = UACPI_INIT_LEVEL_NAMESPACE_LOADED;\n"
+begin = source.find(start)
+finish = source.find(end, begin)
+if begin < 0 or finish < 0 or source.find(start, begin + len(start)) >= 0:
+    raise SystemExit("Unsupported uACPI namespace initialization")
+block = source[begin:finish]
+if 'goto out_fatal_error;' not in block:
+    raise SystemExit("Unexpected uACPI event initialization")
+source = source[:begin] + "#ifndef NTPWR_S5_ONLY\n" + block + "#endif\n" + source[finish:]
+Path(sys.argv[2]).write_text(source)
+PY
 UOBJS=()
 for name in "${SOURCES[@]}"; do
-    "$CC" "${FLAGS[@]}" -I "$SRC/include" -I "$SRC/source" \
-        -c "$SRC/source/$name.c" -o "$B/$name.obj"
+    unit="$SRC/source/$name.c"
+    if [[ "$name" == uacpi ]]; then unit="$UACPI_S5_SOURCE"; fi
+    "$CC" "${FLAGS[@]}" -DNTPWR_S5_ONLY -I "$SRC/include" -I "$SRC/source" \
+        -c "$unit" -o "$B/$name.obj"
     UOBJS+=("$LINK_B/$name.obj")
     printf 'PASS  %s.c\n' "$name"
 done
@@ -83,8 +103,6 @@ EXPORTS
     ZwSetValueKey
     ZwClose
     ZwQueryValueKey
-    IoConnectInterrupt
-    IoDisconnectInterrupt
     IoCreateDevice
     IoCreateSymbolicLink
     IoDeleteDevice
@@ -105,7 +123,6 @@ EXPORTS
     WRITE_PORT_USHORT
     WRITE_PORT_ULONG
     HalGetBusDataByOffset
-    HalGetInterruptVector
 DEF
 cat > "$B/KERNEL32.DEF" <<'DEF'
 LIBRARY KERNEL32.DLL
@@ -187,8 +204,7 @@ imports=(ExAllocatePoolWithTag:12 ExFreePool:4 MmMapIoSpace:16
          MmUnmapIoSpace:8 KeInitializeSemaphore:12 KeReleaseSemaphore:16
          KeWaitForSingleObject:20 KeGetCurrentThread:0 KeDelayExecutionThread:12
          ExQueueWorkItem:8 ZwOpenKey:12 ZwSetValueKey:24 ZwClose:4
-         ZwQueryValueKey:24 IoConnectInterrupt:44 IoDisconnectInterrupt:4
-         IoCreateDevice:28 IoCreateSymbolicLink:8
+         ZwQueryValueKey:24 IoCreateDevice:28 IoCreateSymbolicLink:8
          IoDeleteDevice:4 IoDeleteSymbolicLink:4 MmIsAddressValid:4
          RtlInitUnicodeString:8)
 aliases=()
@@ -199,7 +215,7 @@ done
 for import in READ_PORT_UCHAR:4 READ_PORT_USHORT:4 READ_PORT_ULONG:4 \
               WRITE_PORT_UCHAR:8 WRITE_PORT_USHORT:8 WRITE_PORT_ULONG:8 \
               KeQueryPerformanceCounter:4 KeStallExecutionProcessor:4 \
-              HalGetBusDataByOffset:24 HalGetInterruptVector:24; do
+              HalGetBusDataByOffset:24; do
     name="${import%:*}"; size="${import#*:}"
     aliases+=("/alternatename:__imp__${name}@${size}=__imp__${name}")
 done

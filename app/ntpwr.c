@@ -95,7 +95,6 @@ typedef LONG (__stdcall *DLGPROC)(HWND, UINT, WPARAM, LPARAM);
 #define IDC_BACKEND 306
 #define IDC_HOOK 307
 #define IDC_MODE 308
-#define IDC_SCI 309
 
 struct SERVICE_STATUS {
     DWORD dwServiceType, dwCurrentState, dwControlsAccepted;
@@ -112,8 +111,6 @@ typedef struct PROBE {
     DWORD stage, init, load, eval, count, a, b;
     DWORD error;
     DWORD backend;
-    DWORD sci_phase, sci_irq, sci_vector, sci_status;
-    DWORD sci_eisa_vector, sci_pci_vector;
     BOOL hook_active;
 } PROBE;
 
@@ -403,12 +400,6 @@ static BOOL QueryHook(PROBE *p) {
     if(!KernelHook(NTPWR_IOCTL_QUERY,&report))return FALSE;
     if(report.Signature!=NTPWR_SIGNATURE || report.Size!=sizeof(report))return FALSE;
     p->backend=report.AcpiReady;
-    p->sci_phase=report.SciPhase;
-    p->sci_irq=report.SciIrq;
-    p->sci_vector=report.SciVector;
-    p->sci_status=report.SciStatus;
-    p->sci_eisa_vector=report.SciEisaVector;
-    p->sci_pci_vector=report.SciPciVector;
     p->hook_active=(report.Flags & NTPWR_FLAG_ARMED)!=0;
     return TRUE;
 }
@@ -535,8 +526,6 @@ static BOOL Scan(SC_HANDLE m,PROBE *p) {
     BOOL was_installed=FALSE,was_running=FALSE;
     BOOL temporary=FALSE,started=FALSE,ok=FALSE;
     p->scanned=FALSE;p->error=0;p->backend=0;p->hook_active=FALSE;
-    p->sci_phase=0;p->sci_irq=0;p->sci_vector=0;p->sci_status=0;
-    p->sci_eisa_vector=0;p->sci_pci_vector=0;
     if(!ServiceState(m,&was_installed,&was_running))return FALSE;
     p->installed=was_installed;p->running=was_running;
     if(!was_installed){
@@ -559,24 +548,7 @@ cleanup:
     p->installed=was_installed;p->running=was_running;
     return ok;
 }
-static void FormatSci(const PROBE *p, char *s)
-{
-    char irq[12], vector[12], status[12];
-    DecimalToText(p->sci_irq,irq);
-    HexToText(p->sci_vector,vector);
-    HexToText(p->sci_status,status);
-    s[0]=0;
-    if(p->sci_phase==0){Append(s,100,"Not attempted");return;}
-    if(p->sci_phase==1)Append(s,100,"IRQ not mapped");
-    else if(p->sci_phase==2)Append(s,100,"Connect failed");
-    else if(p->sci_phase==3)Append(s,100,"Connected");
-    else {Append(s,100,"Unknown");return;}
-    Append(s,100,"; IRQ=");Append(s,100,irq);
-    Append(s,100," vector=");Append(s,100,vector);
-    if(p->sci_phase==2){Append(s,100," status=");Append(s,100,status);}
-}
 static void PrintProbe(const PROBE *p) {
-    char sci[100];
     Print("NTPWR: ACPI ");
     if(!p->scanned)Print("not scanned\r\n");
     else if(p->stage==4){
@@ -591,11 +563,6 @@ static void PrintProbe(const PROBE *p) {
     }
     Print("NTPWR: APM not implemented\r\n");
     Print("NTPWR: ACPI S5 ");Print(p->backend?"registers mapped\r\n":"not ready\r\n");
-    FormatSci(p,sci);Print("NTPWR: SCI ");Print(sci);Print("\r\n");
-    if(p->sci_phase==1){
-        Print("NTPWR: SCI candidates EISA=");PrintHex(p->sci_eisa_vector);
-        Print(" PCI=");PrintHex(p->sci_pci_vector);Print("\r\n");
-    }
 }
 static BOOL Run(LPCSTR action) {
     SC_HANDLE m=Manager();BOOL ok=FALSE;
@@ -656,8 +623,8 @@ static const void *MainTemplate(void){
     return g_main_storage;
 }
 static const void *InfoTemplate(void){
-    Begin((BYTE *)g_info_storage,21,295,239,"NTPWR - Information");
-    Control(BS_GROUPBOX,8,7,279,196,30,0x80,"Diagnostics");
+    Begin((BYTE *)g_info_storage,19,295,220,"NTPWR - Information");
+    Control(BS_GROUPBOX,8,7,279,177,30,0x80,"Diagnostics");
     Control(SS_LEFT,16,24,72,12,31,0x82,"Windows:");
     Control(SS_LEFT,96,24,177,12,IDC_OS,0x82,"");
     Control(SS_LEFT,16,43,72,12,32,0x82,"ACPI:");
@@ -674,10 +641,8 @@ static const void *InfoTemplate(void){
     Control(SS_LEFT,96,138,177,12,IDC_BACKEND,0x82,"");
     Control(SS_LEFT,16,157,72,12,38,0x82,"Shutdown hook:");
     Control(SS_LEFT,96,157,177,12,IDC_HOOK,0x82,"");
-    Control(SS_LEFT,16,176,72,12,39,0x82,"SCI:");
-    Control(SS_LEFT,96,176,177,12,IDC_SCI,0x82,"");
-    Control(BS_PUSHBUTTON|WS_TABSTOP,91,211,75,17,IDC_REFRESH,0x80,"Refresh");
-    Control(BS_DEFPUSHBUTTON|WS_TABSTOP,197,211,88,17,IDCANCEL,0x80,"Close");
+    Control(BS_PUSHBUTTON|WS_TABSTOP,91,192,75,17,IDC_REFRESH,0x80,"Refresh");
+    Control(BS_DEFPUSHBUTTON|WS_TABSTOP,197,192,88,17,IDCANCEL,0x80,"Close");
     return g_info_storage;
 }
 static void Text(HWND wnd,int id,LPCSTR val){SetDlgItemTextA(wnd,id,val);}
@@ -719,7 +684,6 @@ static void UpdateInfo(HWND wnd){
     Text(wnd,IDC_APMDETAIL,"Not implemented");
     Text(wnd,IDC_BACKEND,g_probe.backend?"ACPI S5 registers mapped":"Unsupported");
     Text(wnd,IDC_HOOK,g_probe.hook_active?"Active":"Inactive");
-    FormatSci(&g_probe,s);Text(wnd,IDC_SCI,s);
 }
 static BOOL Refresh(void){
     SC_HANDLE m=Manager();BOOL ok;
