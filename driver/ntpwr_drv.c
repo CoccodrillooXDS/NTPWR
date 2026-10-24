@@ -4,6 +4,7 @@
 #include <uacpi/acpi.h>
 #include <uacpi/registers.h>
 #include <uacpi/sleep.h>
+#include <uacpi/io.h>
 #include "nt351_kernel_abi.h"
 
 /* ABI-compatible declarations for the NT 3.51 driver interface. */
@@ -58,9 +59,12 @@ static int g_power_ready = 0;
 static int g_s5_prepared = 0;
 static int g_reduced = 0;
 static uacpi_u8 g_slp_a, g_slp_b;
+static uacpi_mapped_gas *g_reset_reg = UACPI_NULL;
+static uacpi_u8 g_reset_value = 0;
 extern void __cdecl NtpwrTraceAcpiStatus(const char *, unsigned long);
 
 int NtpwrAcpiReady(void) { return g_power_ready; }
+int NtpwrAcpiResetReady(void) { return g_reset_reg != UACPI_NULL; }
 
 static NT_UNICODE_STRING UnicodeValue(const NT_WCHAR *text, unsigned short chars)
 {
@@ -95,6 +99,10 @@ void __stdcall NtpwrProbeCleanup(void)
     g_power_ready = 0;
     g_s5_prepared = 0;
     g_reduced = 0;
+    if (g_reset_reg) {
+        uacpi_unmap_gas(g_reset_reg);
+        g_reset_reg = UACPI_NULL;
+    }
     if (g_namespace_loaded) {
         uacpi_state_reset();
         g_namespace_loaded = UACPI_FALSE;
@@ -146,6 +154,43 @@ static int ValidGas(const struct acpi_gas *g, uacpi_u32 width)
     if (g->address_space_id == UACPI_ADDRESS_SPACE_SYSTEM_IO)
         return g->address <= 0x10000ULL - (width / 8U);
     return g->address_space_id == UACPI_ADDRESS_SPACE_SYSTEM_MEMORY;
+}
+
+static void SetupReset(const struct acpi_fadt *f)
+{
+    const struct acpi_gas *reg = &f->reset_reg;
+    uacpi_status status;
+
+    if (!(f->flags & ACPI_RESET_REG_SUP) || !reg->address ||
+        reg->register_bit_width != 8 || reg->register_bit_offset ||
+        reg->access_size > 1 ||
+        (reg->address_space_id != UACPI_ADDRESS_SPACE_SYSTEM_IO &&
+         reg->address_space_id != UACPI_ADDRESS_SPACE_SYSTEM_MEMORY))
+        return;
+
+    status = uacpi_map_gas(reg, &g_reset_reg);
+    if (status != UACPI_STATUS_OK) {
+        g_reset_reg = UACPI_NULL;
+        NtpwrTraceAcpiStatus("reset mapping failed", (unsigned long)status);
+        return;
+    }
+    g_reset_value = f->reset_value;
+    DbgPrint("NTPWR: ACPI reset mapped space=%lu address=0x%08lX%08lX value=0x%02lX\n",
+             (unsigned long)reg->address_space_id,
+             (unsigned long)(reg->address >> 32), (unsigned long)reg->address,
+             (unsigned long)g_reset_value);
+}
+
+int NtpwrAcpiReset(void)
+{
+    uacpi_status status;
+    if (!g_reset_reg) return 0;
+    status = uacpi_gas_write_mapped(g_reset_reg, g_reset_value);
+    if (status != UACPI_STATUS_OK) {
+        NtpwrTraceAcpiStatus("reset failed", (unsigned long)status);
+        return 0;
+    }
+    return 1;
 }
 
 static int SetupS5(const struct acpi_fadt *f)
@@ -261,6 +306,7 @@ NT351_LONG __stdcall NtpwrProbeInitialize(NT_DRIVER_OBJECT_PREFIX *driver,
         struct acpi_fadt *fadt = UACPI_NULL;
         if (uacpi_table_fadt(&fadt) == UACPI_STATUS_OK && fadt) {
             ReportFadt(fadt);
+            SetupReset(fadt);
             g_slp_a = (uacpi_u8)a;
             g_slp_b = (uacpi_u8)b;
             g_power_ready = SetupS5(fadt);

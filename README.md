@@ -2,7 +2,7 @@
 
 NTPWR provides automatic power-off support for legacy Windows NT systems. It uses uACPI to inspect firmware ACPI tables and evaluate AML, with a kernel shutdown hook and a Winlogon service to handle power-off while preserving restart behavior. The shutdown-hook implementation is adapted from [QEMUPWR](https://github.com/CoccodrillooXDS/QEMUPWR).
 
-The ACPI S5 backend uses firmware-provided FADT registers and AML without QEMU-specific checks. Automatic S5 preparation is coordinated with Winlogon. APM is not implemented.
+The ACPI S5 backend uses firmware-provided FADT registers and AML without QEMU-specific checks. Automatic S5 preparation is coordinated with Winlogon. When supported, reboot uses the FADT reset register with a fallback to the original HAL. APM is not implemented.
 
 ## Compatibility
 
@@ -81,6 +81,7 @@ Use a VM snapshot when evaluating an untested operating system or firmware confi
 - FADT/GAS-based S5 power-off has been validated only on the listed QEMU guests, not on physical systems or other firmware.
 - Winlogon triggers uACPI S5 preparation, including `_PTS(5)`, before the final HAL powerdown.
 - SCI/GPE event handling is omitted; this is not a general-purpose ACPI device driver.
+- The ACPI reset path supports FADT System I/O and System Memory registers; PCI Configuration resets retain the original HAL behavior.
 - The firmware `_GTS` method is not currently invoked.
 - The APM backend is not implemented.
 - Compatibility outside the listed Windows NT kernel profiles is not established.

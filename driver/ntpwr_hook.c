@@ -5,6 +5,8 @@
 #define PV_DEBUG_PORT 0x00E9
 extern int __cdecl NtpwrAcpiReady(void);
 extern int __cdecl NtpwrAcpiPowerOff(void);
+extern int __cdecl NtpwrAcpiResetReady(void);
+extern int __cdecl NtpwrAcpiReset(void);
 extern ULONG __cdecl NtpwrAcpiPrepare(void);
 extern long __stdcall NtpwrProbeInitialize(void *, void *);
 extern void __stdcall NtpwrProbeCleanup(void);
@@ -304,6 +306,10 @@ static VOID __stdcall PvHalHook(ULONG Routine)
             }
         }
         PvLog("NTPWR: ACPI S5 unavailable; HAL fallback\r\n");
+    } else if (Routine == 3 && NtpwrAcpiResetReady()) {
+        PvLog("NTPWR: ACPI reset requested\r\n");
+        (void)NtpwrAcpiReset();
+        PvLog("NTPWR: HAL reboot fallback\r\n");
     }
     if (g_Original != NULL) g_Original(Routine);
 }
