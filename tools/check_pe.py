@@ -14,7 +14,7 @@ def check(path):
     os_major, os_minor = struct.unpack_from('<HH', data, opt + 40)
     sub = struct.unpack_from('<H', data, opt + 68)[0]
     assert (os_major, os_minor) == (3, 51), f'{path}: OS is not 3.51'
-    expect = 1 if path.lower().endswith('.sys') else 2
+    expect = 1 if path.lower().endswith('.sys') else 3
     assert sub == expect, f'{path}: incorrect PE subsystem {sub}'
     image_base = struct.unpack_from('<I', data, opt + 28)[0]
     assert len(data) > 512

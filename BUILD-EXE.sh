@@ -31,8 +31,7 @@ LIBRARY KERNEL32.DLL
 EXPORTS
     GetStdHandle
     WriteFile
-    ReadFile
-    AllocConsole
+    FreeConsole
     GetLastError
     ExitProcess
     GetCommandLineA
@@ -103,7 +102,7 @@ for name in KERNEL32 ADVAPI32 USER32; do
     MSYS2_ARG_CONV_EXCL="*" "$LD" /nologo /machine:x86 /dll /noentry \
         "/def:$LINK_B/${name}.DEF" "/out:$LINK_B/${name}.stub.dll"
 done
-user_imports=(GetStdHandle:4 WriteFile:20 ReadFile:20 AllocConsole:0 GetLastError:0 ExitProcess:4
+user_imports=(GetStdHandle:4 WriteFile:20 FreeConsole:0 GetLastError:0 ExitProcess:4
   GetCommandLineA:0 GetModuleFileNameA:12 GetSystemDirectoryA:8
   CopyFileA:12 DeleteFileA:4 Sleep:4 GetModuleHandleA:4 GetVersionExA:4
   CloseHandle:4 CreateFileA:28 DeviceIoControl:32 GetCurrentProcess:0
@@ -124,7 +123,7 @@ for imp in "${user_imports[@]}"; do
   name="${imp%:*}"; sz="${imp#*:}"
   user_aliases+=("/alternatename:__imp__${name}@${sz}=__imp__${name}")
 done
-MSYS2_ARG_CONV_EXCL="*" "$LD" /nologo /machine:x86 /subsystem:windows,3.51 /osversion:3.51 \
+MSYS2_ARG_CONV_EXCL="*" "$LD" /nologo /machine:x86 /subsystem:console,3.51 /osversion:3.51 \
   /entry:Entry /nodefaultlib /dynamicbase:no /nxcompat:no /safeseh:no \
   "/out:$LINK_ROOT/DIST/NTPWR.EXE" "$LINK_B/ntpwr_cli.obj" \
   "$LINK_B/ntpwr_remap.obj" "$LINK_B/ntpwr_service.obj" "$LINK_B/runtime.obj" \
@@ -138,7 +137,7 @@ assert b[:2]==b'MZ' and b[pe:pe+4]==b'PE\0\0'
 assert struct.unpack_from('<H',b,pe+4)[0]==0x14c
 op=pe+24
 sub=struct.unpack_from('<H',b,op+68)[0]
-assert sub==2, f'expected Windows GUI subsystem, got {sub}'
+assert sub==3, f'expected Windows console subsystem, got {sub}'
 assert struct.unpack_from('<HH',b,op+48)==(3,51)
-print(f'PASS {p.name}: PE32 i386, GUI subsystem, NT 3.51')
+print(f'PASS {p.name}: PE32 i386, console subsystem, NT 3.51')
 PYTHON

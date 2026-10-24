@@ -109,8 +109,7 @@ LIBRARY KERNEL32.DLL
 EXPORTS
     GetStdHandle
     WriteFile
-    ReadFile
-    AllocConsole
+    FreeConsole
     GetLastError
     ExitProcess
     GetCommandLineA
@@ -216,7 +215,7 @@ MSYS2_ARG_CONV_EXCL="*" "$LD" /nologo /dll /driver /machine:x86 /subsystem:nativ
 for unit in ntpwr_remap ntpwr_service; do
     "$CC" --target=i386-pc-windows-msvc -march=i486 -mno-sse -mno-sse2 -O1 -ffreestanding -fno-builtin -fno-stack-protector -fms-extensions -c "$ROOT/app/$unit.c" -o "$B/$unit.obj"
 done
-user_imports=(GetStdHandle:4 WriteFile:20 ReadFile:20 AllocConsole:0 GetLastError:0 ExitProcess:4
+user_imports=(GetStdHandle:4 WriteFile:20 FreeConsole:0 GetLastError:0 ExitProcess:4
   GetCommandLineA:0 GetModuleFileNameA:12 GetSystemDirectoryA:8
   CopyFileA:12 DeleteFileA:4 Sleep:4 GetModuleHandleA:4 GetVersionExA:4
   CloseHandle:4 CreateFileA:28 DeviceIoControl:32 GetCurrentProcess:0
@@ -237,7 +236,7 @@ for imp in "${user_imports[@]}"; do
   name="${imp%:*}"; sz="${imp#*:}"
   user_aliases+=("/alternatename:__imp__${name}@${sz}=__imp__${name}")
 done
-MSYS2_ARG_CONV_EXCL="*" "$LD" /nologo /machine:x86 /subsystem:windows,3.51 /osversion:3.51 \
+MSYS2_ARG_CONV_EXCL="*" "$LD" /nologo /machine:x86 /subsystem:console,3.51 /osversion:3.51 \
   /entry:Entry /nodefaultlib /dynamicbase:no /nxcompat:no /safeseh:no \
   "/out:$LINK_ROOT/DIST/NTPWR.EXE" "$LINK_B/ntpwr_cli.obj" \
   "$LINK_B/ntpwr_remap.obj" "$LINK_B/ntpwr_service.obj" "$LINK_B/runtime.obj" \
