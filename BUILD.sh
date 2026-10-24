@@ -149,6 +149,7 @@ EXPORTS
     HeapAlloc
     HeapFree
     OpenProcess
+    DuplicateHandle
     ReadProcessMemory
     WriteProcessMemory
     CreateEventA
@@ -240,6 +241,7 @@ user_imports=(GetStdHandle:4 WriteFile:20 FreeConsole:0 GetLastError:0 ExitProce
   CopyFileA:12 DeleteFileA:4 Sleep:4 GetModuleHandleA:4 GetVersionExA:4
   CloseHandle:4 CreateFileA:28 DeviceIoControl:32 GetCurrentProcess:0
   GetProcAddress:8 GetProcessHeap:0 HeapAlloc:12 HeapFree:12 OpenProcess:12
+  DuplicateHandle:28
   ReadProcessMemory:20 WriteProcessMemory:20 CreateEventA:16 ResetEvent:4
   SetEvent:4 WaitForSingleObject:8 SetLastError:4 lstrcmpiA:8 lstrlenA:4
   DialogBoxIndirectParamA:20 EndDialog:8 SetDlgItemTextA:12 GetDlgItem:8 EnableWindow:8 MessageBoxA:16
