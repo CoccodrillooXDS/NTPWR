@@ -4,20 +4,27 @@
 #define NT351_INTERRUPT_TAG 0x49504155UL
 #define NT351_INTERNAL_BUS 0UL
 #define NT351_ISA_BUS 1UL
+#define NT351_EISA_BUS 2UL
+#define NT351_PCI_BUS 5UL
 #define NT351_LEVEL_SENSITIVE 0UL
 
 static NT351_U32 g_sci_phase;
 static NT351_U32 g_sci_irq;
 static NT351_U32 g_sci_vector;
 static NT351_U32 g_sci_status;
+static NT351_U32 g_sci_eisa_vector;
+static NT351_U32 g_sci_pci_vector;
 
 void __cdecl NtpwrSciQuery(NT351_U32 *phase, NT351_U32 *irq,
-                          NT351_U32 *vector, NT351_U32 *status)
+                          NT351_U32 *vector, NT351_U32 *status,
+                          NT351_U32 *eisa_vector, NT351_U32 *pci_vector)
 {
     *phase = g_sci_phase;
     *irq = g_sci_irq;
     *vector = g_sci_vector;
     *status = g_sci_status;
+    *eisa_vector = g_sci_eisa_vector;
+    *pci_vector = g_sci_pci_vector;
 }
 
 
@@ -63,6 +70,8 @@ uacpi_status __cdecl uacpi_kernel_install_interrupt_handler(
     g_sci_irq = irq;
     g_sci_vector = 0;
     g_sci_status = 0;
+    g_sci_eisa_vector = 0;
+    g_sci_pci_vector = 0;
     if (!out_irq_handle || !handler || irq == 0) return UACPI_STATUS_INVALID_ARGUMENT;
     *out_irq_handle = UACPI_NULL;
 
@@ -78,8 +87,20 @@ uacpi_status __cdecl uacpi_kernel_install_interrupt_handler(
     }
     g_sci_vector = vector;
     if (!vector || !affinity) {
+        NT351_U8 probe_irql = 0;
+        NT351_U32 probe_affinity = 0;
         g_sci_phase = 1;
-        DbgPrint("NTPWR: SCI IRQ=%lu not mapped by HAL\n", (unsigned long)irq);
+        g_sci_eisa_vector = HalGetInterruptVector(NT351_EISA_BUS, 0, irq, irq,
+                                                 &probe_irql, &probe_affinity);
+        if (!probe_affinity) g_sci_eisa_vector = 0;
+        probe_irql = 0;
+        probe_affinity = 0;
+        g_sci_pci_vector = HalGetInterruptVector(NT351_PCI_BUS, 0, irq, irq,
+                                                &probe_irql, &probe_affinity);
+        if (!probe_affinity) g_sci_pci_vector = 0;
+        DbgPrint("NTPWR: SCI IRQ=%lu unresolved; EISA=0x%08lX PCI=0x%08lX\n",
+                 (unsigned long)irq, (unsigned long)g_sci_eisa_vector,
+                 (unsigned long)g_sci_pci_vector);
         return UACPI_STATUS_UNIMPLEMENTED;
     }
 

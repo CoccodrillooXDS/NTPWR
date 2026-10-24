@@ -7,7 +7,7 @@
 #define NTPWR_IOCTL_DISARM 0x0022200CUL
 #define NTPWR_IOCTL_VERIFY_FILE 0x00222010UL
 #define NTPWR_SIGNATURE 0x52575051UL
-#define NTPWR_REPORT_VERSION 3UL
+#define NTPWR_REPORT_VERSION 4UL
 
 #define NTPWR_OK 0UL
 #define NTPWR_BAD_KERNEL_BASE 1UL
@@ -70,6 +70,8 @@ typedef struct _NTPWR_REPORT {
     unsigned long SciIrq;
     unsigned long SciVector;
     unsigned long SciStatus;
+    unsigned long SciEisaVector;
+    unsigned long SciPciVector;
 } NTPWR_REPORT;
 #pragma pack()
 

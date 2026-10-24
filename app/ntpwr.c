@@ -113,6 +113,7 @@ typedef struct PROBE {
     DWORD error;
     DWORD backend;
     DWORD sci_phase, sci_irq, sci_vector, sci_status;
+    DWORD sci_eisa_vector, sci_pci_vector;
     BOOL hook_active;
 } PROBE;
 
@@ -406,6 +407,8 @@ static BOOL QueryHook(PROBE *p) {
     p->sci_irq=report.SciIrq;
     p->sci_vector=report.SciVector;
     p->sci_status=report.SciStatus;
+    p->sci_eisa_vector=report.SciEisaVector;
+    p->sci_pci_vector=report.SciPciVector;
     p->hook_active=(report.Flags & NTPWR_FLAG_ARMED)!=0;
     return TRUE;
 }
@@ -533,6 +536,7 @@ static BOOL Scan(SC_HANDLE m,PROBE *p) {
     BOOL temporary=FALSE,started=FALSE,ok=FALSE;
     p->scanned=FALSE;p->error=0;p->backend=0;p->hook_active=FALSE;
     p->sci_phase=0;p->sci_irq=0;p->sci_vector=0;p->sci_status=0;
+    p->sci_eisa_vector=0;p->sci_pci_vector=0;
     if(!ServiceState(m,&was_installed,&was_running))return FALSE;
     p->installed=was_installed;p->running=was_running;
     if(!was_installed){
@@ -588,6 +592,10 @@ static void PrintProbe(const PROBE *p) {
     Print("NTPWR: APM not implemented\r\n");
     Print("NTPWR: ACPI S5 ");Print(p->backend?"registers mapped\r\n":"not ready\r\n");
     FormatSci(p,sci);Print("NTPWR: SCI ");Print(sci);Print("\r\n");
+    if(p->sci_phase==1){
+        Print("NTPWR: SCI candidates EISA=");PrintHex(p->sci_eisa_vector);
+        Print(" PCI=");PrintHex(p->sci_pci_vector);Print("\r\n");
+    }
 }
 static BOOL Run(LPCSTR action) {
     SC_HANDLE m=Manager();BOOL ok=FALSE;
