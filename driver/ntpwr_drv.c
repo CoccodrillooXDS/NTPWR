@@ -81,6 +81,7 @@ static void SetDword(NT_HANDLE key, const NT_WCHAR *name,
 static const NT_WCHAR s_stage[] = {'P','r','o','b','e','S','t','a','g','e',0};
 static const NT_WCHAR s_init[] = {'I','n','i','t','S','t','a','t','u','s',0};
 static const NT_WCHAR s_load[] = {'L','o','a','d','S','t','a','t','u','s',0};
+static const NT_WCHAR s_namespace[] = {'N','a','m','e','s','p','a','c','e','S','t','a','t','u','s',0};
 static const NT_WCHAR s_eval[] = {'E','v','a','l','S','t','a','t','u','s',0};
 static const NT_WCHAR s_count[] = {'S','5','C','o','u','n','t',0};
 static const NT_WCHAR s_a[] = {'S','5','T','y','p','e','A',0};
@@ -173,6 +174,7 @@ NT351_LONG __stdcall NtpwrProbeInitialize(NT_DRIVER_OBJECT_PREFIX *driver,
     NT_HANDLE key = (NT_HANDLE)0;
     NT351_LONG status;
     uacpi_status init_status, load_status = UACPI_STATUS_UNIMPLEMENTED;
+    uacpi_status namespace_status = UACPI_STATUS_UNIMPLEMENTED;
     uacpi_status eval_status = UACPI_STATUS_UNIMPLEMENTED;
     uacpi_object *s5 = UACPI_NULL;
     uacpi_object_array parts;
@@ -197,6 +199,7 @@ NT351_LONG __stdcall NtpwrProbeInitialize(NT_DRIVER_OBJECT_PREFIX *driver,
     SetDword(key, s_stage, 10, 0);
     SetDword(key, s_init, 10, 0xFFFFFFFFUL);
     SetDword(key, s_load, 10, 0xFFFFFFFFUL);
+    SetDword(key, s_namespace, 15, 0xFFFFFFFFUL);
     SetDword(key, s_eval, 10, 0xFFFFFFFFUL);
     SetDword(key, s_count, 7, 0);
     SetDword(key, s_a, 7, 0xFFFFFFFFUL);
@@ -216,6 +219,12 @@ NT351_LONG __stdcall NtpwrProbeInitialize(NT_DRIVER_OBJECT_PREFIX *driver,
         goto done;
     }
     g_namespace_loaded = UACPI_TRUE;
+    namespace_status = uacpi_namespace_initialize();
+    SetDword(key, s_namespace, 15, (uacpi_u32)namespace_status);
+    if (namespace_status != UACPI_STATUS_OK) {
+        stage = 3;
+        goto done;
+    }
     eval_status = uacpi_eval_simple_package(UACPI_NULL, "\\_S5", &s5);
     if (eval_status != UACPI_STATUS_OK) {
         stage = 3;
@@ -262,9 +271,10 @@ done:
     SetDword(key, s_stage, 10, stage);
     ZwClose(key);
     if (stage != 4)
-        DbgPrint("NTPWR: probe stopped stage=%lu init=%lu load=%lu eval=%lu\n",
+        DbgPrint("NTPWR: probe stopped stage=%lu init=%lu load=%lu namespace=%lu eval=%lu\n",
                  (unsigned long)stage, (unsigned long)init_status,
-                 (unsigned long)load_status, (unsigned long)eval_status);
+                 (unsigned long)load_status, (unsigned long)namespace_status,
+                 (unsigned long)eval_status);
     return NT_STATUS_SUCCESS;
 }
 

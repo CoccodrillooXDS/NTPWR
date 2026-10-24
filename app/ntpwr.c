@@ -95,6 +95,7 @@ typedef LONG (__stdcall *DLGPROC)(HWND, UINT, WPARAM, LPARAM);
 #define IDC_BACKEND 306
 #define IDC_HOOK 307
 #define IDC_MODE 308
+#define IDC_NAMESPACE 309
 
 struct SERVICE_STATUS {
     DWORD dwServiceType, dwCurrentState, dwControlsAccepted;
@@ -108,7 +109,7 @@ struct OSVERSIONINFOA {
 
 typedef struct PROBE {
     BOOL installed, running, scanned;
-    DWORD stage, init, load, eval, count, a, b;
+    DWORD stage, init, load, ns, eval, count, a, b;
     DWORD error;
     DWORD backend;
     BOOL hook_active;
@@ -378,6 +379,7 @@ static BOOL ReadProbe(PROBE *p) {
     p->scanned=ReadDword(key,"ProbeStage",&p->stage)&&
         ReadDword(key,"InitStatus",&p->init)&&
         ReadDword(key,"LoadStatus",&p->load)&&
+        ReadDword(key,"NamespaceStatus",&p->ns)&&
         ReadDword(key,"EvalStatus",&p->eval)&&
         ReadDword(key,"S5Count",&p->count)&&
         ReadDword(key,"S5TypeA",&p->a)&&
@@ -559,6 +561,7 @@ static void PrintProbe(const PROBE *p) {
         Print("probe incomplete; stage=");PrintDecimal(p->stage);
         Print(" init=");PrintHex(p->init);
         Print(" load=");PrintHex(p->load);
+        Print(" namespace=");PrintHex(p->ns);
         Print(" eval=");PrintHex(p->eval);Print("\r\n");
     }
     Print("NTPWR: APM not implemented\r\n");
@@ -623,8 +626,8 @@ static const void *MainTemplate(void){
     return g_main_storage;
 }
 static const void *InfoTemplate(void){
-    Begin((BYTE *)g_info_storage,19,295,220,"NTPWR - Information");
-    Control(BS_GROUPBOX,8,7,279,177,30,0x80,"Diagnostics");
+    Begin((BYTE *)g_info_storage,21,295,239,"NTPWR - Information");
+    Control(BS_GROUPBOX,8,7,279,196,30,0x80,"Diagnostics");
     Control(SS_LEFT,16,24,72,12,31,0x82,"Windows:");
     Control(SS_LEFT,96,24,177,12,IDC_OS,0x82,"");
     Control(SS_LEFT,16,43,72,12,32,0x82,"ACPI:");
@@ -641,8 +644,10 @@ static const void *InfoTemplate(void){
     Control(SS_LEFT,96,138,177,12,IDC_BACKEND,0x82,"");
     Control(SS_LEFT,16,157,72,12,38,0x82,"Shutdown hook:");
     Control(SS_LEFT,96,157,177,12,IDC_HOOK,0x82,"");
-    Control(BS_PUSHBUTTON|WS_TABSTOP,91,192,75,17,IDC_REFRESH,0x80,"Refresh");
-    Control(BS_DEFPUSHBUTTON|WS_TABSTOP,197,192,88,17,IDCANCEL,0x80,"Close");
+    Control(SS_LEFT,16,176,72,12,39,0x82,"Namespace:");
+    Control(SS_LEFT,96,176,177,12,IDC_NAMESPACE,0x82,"");
+    Control(BS_PUSHBUTTON|WS_TABSTOP,91,211,75,17,IDC_REFRESH,0x80,"Refresh");
+    Control(BS_DEFPUSHBUTTON|WS_TABSTOP,197,211,88,17,IDCANCEL,0x80,"Close");
     return g_info_storage;
 }
 static void Text(HWND wnd,int id,LPCSTR val){SetDlgItemTextA(wnd,id,val);}
@@ -682,6 +687,8 @@ static void UpdateInfo(HWND wnd){
         Text(wnd,IDC_S5,s);
     }
     Text(wnd,IDC_APMDETAIL,"Not implemented");
+    if(g_probe.scanned){HexToText(g_probe.ns,s);Text(wnd,IDC_NAMESPACE,s);}
+    else Text(wnd,IDC_NAMESPACE,"Unavailable");
     Text(wnd,IDC_BACKEND,g_probe.backend?"ACPI S5 registers mapped":"Unsupported");
     Text(wnd,IDC_HOOK,g_probe.hook_active?"Active":"Inactive");
 }
