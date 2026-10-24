@@ -63,6 +63,7 @@ static uacpi_mapped_gas *g_reset_reg = UACPI_NULL;
 static uacpi_u8 g_reset_value = 0;
 extern void __cdecl NtpwrTraceAcpiStatus(const char *, unsigned long);
 extern void __cdecl NtpwrTraceAcpiEvent(const char *);
+extern uacpi_status ntpwr_uacpi_prepare_smi_cmd(void);
 
 int NtpwrAcpiReady(void) { return g_power_ready; }
 int NtpwrAcpiResetReady(void) { return g_reset_reg != UACPI_NULL; }
@@ -223,6 +224,13 @@ static int SetupS5(const struct acpi_fadt *f)
         DbgPrint("NTPWR: ACPI register mapping failed status=%lu\n",
                  (unsigned long)ret);
         return 0;
+    }
+    if (!g_reduced && f->smi_cmd && (f->acpi_enable || f->acpi_disable)) {
+        ret = ntpwr_uacpi_prepare_smi_cmd();
+        if (ret != UACPI_STATUS_OK) {
+            NtpwrTraceAcpiStatus("SMI_CMD mapping failed", (unsigned long)ret);
+            return 0;
+        }
     }
     return 1;
 }

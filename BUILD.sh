@@ -76,10 +76,29 @@ if 'goto out_fatal_error;' not in block:
 source = source[:begin] + "#ifndef NTPWR_S5_ONLY\n" + block + "#endif\n" + source[finish:]
 Path(sys.argv[2]).write_text(source)
 PY
+UACPI_REGISTER_SOURCE="$B/ntpwr_registers.c"
+python3 - "$SRC/source/registers.c" "$UACPI_REGISTER_SOURCE" <<'PY'
+from pathlib import Path
+import sys
+
+source = Path(sys.argv[1]).read_text()
+marker = "static uacpi_status get_reg(\n"
+if source.count(marker) != 1:
+    raise SystemExit("Unsupported uACPI register mapping")
+source = source.replace(marker, """uacpi_status ntpwr_uacpi_prepare_smi_cmd(void)
+{
+    return ensure_register_mapped(&g_registers[UACPI_REGISTER_SMI_CMD],
+                                  &g_register_mappings[UACPI_REGISTER_SMI_CMD]);
+}
+
+""" + marker)
+Path(sys.argv[2]).write_text(source)
+PY
 UOBJS=()
 for name in "${SOURCES[@]}"; do
     unit="$SRC/source/$name.c"
     if [[ "$name" == uacpi ]]; then unit="$UACPI_S5_SOURCE"; fi
+    if [[ "$name" == registers ]]; then unit="$UACPI_REGISTER_SOURCE"; fi
     "$CC" "${FLAGS[@]}" -DNTPWR_S5_ONLY -I "$SRC/include" -I "$SRC/source" \
         -c "$unit" -o "$B/$name.obj"
     UOBJS+=("$LINK_B/$name.obj")
