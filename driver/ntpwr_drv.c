@@ -342,7 +342,7 @@ unsigned long NtpwrAcpiPrepare(void)
 {
     uacpi_status status;
     if (!g_power_ready) return UACPI_STATUS_INIT_LEVEL_MISMATCH;
-    if (g_s5_prepared) return UACPI_STATUS_OK;
+    g_s5_prepared = 0;
 
     status = uacpi_prepare_for_sleep_state(UACPI_SLEEP_STATE_S5);
     if (status == UACPI_STATUS_OK) g_s5_prepared = 1;
@@ -359,6 +359,7 @@ int NtpwrAcpiPowerOff(void)
         NtpwrTraceAcpiStatus("S5 not prepared", 0);
         return 0;
     }
+    g_s5_prepared = 0;
     if (g_reduced) {
         NtpwrTraceAcpiEvent("S5 requested");
         ret = uacpi_write_register(UACPI_REGISTER_SLP_CNT,
