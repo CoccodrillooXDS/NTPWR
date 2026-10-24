@@ -4,6 +4,7 @@
 #define PV_KERNEL_BASE 0x80100000UL
 #define PV_DEBUG_PORT 0x00E9
 extern int __cdecl NtpwrAcpiReady(void);
+extern void __cdecl NtpwrSciQuery(ULONG *, ULONG *, ULONG *, ULONG *);
 extern int __cdecl NtpwrAcpiPowerOff(void);
 extern long __stdcall NtpwrProbeInitialize(void *, void *);
 extern void __stdcall NtpwrProbeCleanup(void);
@@ -153,6 +154,8 @@ static VOID PvScan(VOID)
     g_Report.KernelBase = PV_KERNEL_BASE;
     g_Report.Result = NTPWR_BAD_KERNEL_BASE;
     g_Report.AcpiReady = NtpwrAcpiReady() ? 1UL : 0UL;
+    NtpwrSciQuery(&g_Report.SciPhase, &g_Report.SciIrq,
+                  &g_Report.SciVector, &g_Report.SciStatus);
 
     if (!PvMapped(Base, 0x100)) return;
     g_Report.Result = NTPWR_BAD_PE;
