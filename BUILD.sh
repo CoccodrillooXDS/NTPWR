@@ -83,6 +83,8 @@ EXPORTS
     ZwSetValueKey
     ZwClose
     ZwQueryValueKey
+    IoConnectInterrupt
+    IoDisconnectInterrupt
     IoCreateDevice
     IoCreateSymbolicLink
     IoDeleteDevice
@@ -103,6 +105,7 @@ EXPORTS
     WRITE_PORT_USHORT
     WRITE_PORT_ULONG
     HalGetBusDataByOffset
+    HalGetInterruptVector
 DEF
 cat > "$B/KERNEL32.DEF" <<'DEF'
 LIBRARY KERNEL32.DLL
@@ -184,7 +187,8 @@ imports=(ExAllocatePoolWithTag:12 ExFreePool:4 MmMapIoSpace:16
          MmUnmapIoSpace:8 KeInitializeSemaphore:12 KeReleaseSemaphore:16
          KeWaitForSingleObject:20 KeGetCurrentThread:0 KeDelayExecutionThread:12
          ExQueueWorkItem:8 ZwOpenKey:12 ZwSetValueKey:24 ZwClose:4
-         ZwQueryValueKey:24 IoCreateDevice:28 IoCreateSymbolicLink:8
+         ZwQueryValueKey:24 IoConnectInterrupt:44 IoDisconnectInterrupt:4
+         IoCreateDevice:28 IoCreateSymbolicLink:8
          IoDeleteDevice:4 IoDeleteSymbolicLink:4 MmIsAddressValid:4
          RtlInitUnicodeString:8)
 aliases=()
@@ -195,7 +199,7 @@ done
 for import in READ_PORT_UCHAR:4 READ_PORT_USHORT:4 READ_PORT_ULONG:4 \
               WRITE_PORT_UCHAR:8 WRITE_PORT_USHORT:8 WRITE_PORT_ULONG:8 \
               KeQueryPerformanceCounter:4 KeStallExecutionProcessor:4 \
-              HalGetBusDataByOffset:24; do
+              HalGetBusDataByOffset:24 HalGetInterruptVector:24; do
     name="${import%:*}"; size="${import#*:}"
     aliases+=("/alternatename:__imp__${name}@${size}=__imp__${name}")
 done
