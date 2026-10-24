@@ -58,6 +58,13 @@ void __cdecl NtpwrTraceAcpiStatus(const char *Stage, ULONG Status)
     PvLog("\r\n");
 }
 
+void __cdecl NtpwrTraceAcpiEvent(const char *Event)
+{
+    PvLog("NTPWR: ACPI ");
+    PvLog(Event);
+    PvLog("\r\n");
+}
+
 static BOOLEAN PvMapped(PUCHAR P, ULONG Count)
 {
     ULONG I;
@@ -300,7 +307,6 @@ static VOID __stdcall PvHalHook(ULONG Routine)
 
     if (Routine == 1) {
         if (NtpwrAcpiPowerOff()) {
-            PvLog("NTPWR: ACPI S5 issued\r\n");
             for (;;) {
                 __asm__ __volatile__("cli\n\thlt" : : : "memory");
             }
@@ -309,7 +315,7 @@ static VOID __stdcall PvHalHook(ULONG Routine)
     } else if (Routine == 3 && NtpwrAcpiResetReady()) {
         PvLog("NTPWR: ACPI reset requested\r\n");
         (void)NtpwrAcpiReset();
-        PvLog("NTPWR: HAL reboot fallback\r\n");
+        PvLog("NTPWR: ACPI reset returned; HAL fallback\r\n");
     }
     if (g_Original != NULL) g_Original(Routine);
 }

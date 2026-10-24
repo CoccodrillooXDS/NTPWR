@@ -62,6 +62,7 @@ static uacpi_u8 g_slp_a, g_slp_b;
 static uacpi_mapped_gas *g_reset_reg = UACPI_NULL;
 static uacpi_u8 g_reset_value = 0;
 extern void __cdecl NtpwrTraceAcpiStatus(const char *, unsigned long);
+extern void __cdecl NtpwrTraceAcpiEvent(const char *);
 
 int NtpwrAcpiReady(void) { return g_power_ready; }
 int NtpwrAcpiResetReady(void) { return g_reset_reg != UACPI_NULL; }
@@ -349,6 +350,7 @@ int NtpwrAcpiPowerOff(void)
         return 0;
     }
     if (g_reduced) {
+        NtpwrTraceAcpiEvent("S5 requested");
         ret = uacpi_write_register(UACPI_REGISTER_SLP_CNT,
                                    ((uacpi_u64)g_slp_a << 2) | 0x20U);
     } else {
@@ -380,9 +382,11 @@ int NtpwrAcpiPowerOff(void)
         a = current | ((uacpi_u64)g_slp_a << 10);
         b = current | ((uacpi_u64)g_slp_b << 10);
         ret = uacpi_write_registers(UACPI_REGISTER_PM1_CNT, a, b);
-        if (ret == UACPI_STATUS_OK)
+        if (ret == UACPI_STATUS_OK) {
+            NtpwrTraceAcpiEvent("S5 requested");
             ret = uacpi_write_registers(UACPI_REGISTER_PM1_CNT,
                                         a | 0x2000U, b | 0x2000U);
+        }
     }
     if (ret != UACPI_STATUS_OK) {
         NtpwrTraceAcpiStatus("S5 write failed", (unsigned long)ret);
