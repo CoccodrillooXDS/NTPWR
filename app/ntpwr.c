@@ -95,6 +95,7 @@ typedef LONG (__stdcall *DLGPROC)(HWND, UINT, WPARAM, LPARAM);
 #define IDC_BACKEND 306
 #define IDC_HOOK 307
 #define IDC_MODE 308
+#define IDC_NAMESPACE 309
 
 struct SERVICE_STATUS {
     DWORD dwServiceType, dwCurrentState, dwControlsAccepted;
@@ -108,7 +109,7 @@ struct OSVERSIONINFOA {
 
 typedef struct PROBE {
     BOOL installed, running, scanned;
-    DWORD stage, init, load, eval, count, a, b;
+    DWORD stage, init, load, ns, eval, count, a, b;
     DWORD error;
     DWORD backend;
     BOOL hook_active;
@@ -378,22 +379,34 @@ static BOOL ReadProbe(PROBE *p) {
     p->scanned=ReadDword(key,"ProbeStage",&p->stage)&&
         ReadDword(key,"InitStatus",&p->init)&&
         ReadDword(key,"LoadStatus",&p->load)&&
+        ReadDword(key,"NamespaceStatus",&p->ns)&&
         ReadDword(key,"EvalStatus",&p->eval)&&
         ReadDword(key,"S5Count",&p->count)&&
         ReadDword(key,"S5TypeA",&p->a)&&
         ReadDword(key,"S5TypeB",&p->b);
     RegCloseKey(key);return p->scanned;
 }
-static BOOL KernelHook(DWORD action,NTPWR_REPORT *out) {
+static BOOL KernelRequest(DWORD action,void *out,DWORD output_size) {
     HANDLE d=CreateFileA("\\\\.\\NTPWR",GENERIC_READ|GENERIC_WRITE,
         FILE_SHARE_READ|FILE_SHARE_WRITE,NULL,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,NULL);
     DWORD count=0;
     BOOL ok;
     if(!d || d==(HANDLE)-1)return FALSE;
-    ok=DeviceIoControl(d,action,NULL,0,out,
-        out ? (DWORD)sizeof(*out) : 0,&count,NULL);
+    ok=DeviceIoControl(d,action,NULL,0,out,output_size,&count,NULL);
+    if(ok && out && count!=output_size)ok=FALSE;
     CloseHandle(d);
     return ok;
+}
+static BOOL KernelHook(DWORD action,NTPWR_REPORT *out) {
+    return KernelRequest(action,out,out?(DWORD)sizeof(*out):0);
+}
+static BOOL KernelPrepare(void) {
+    DWORD status=0xFFFFFFFFUL;
+    if(!KernelRequest(NTPWR_IOCTL_PREPARE_S5,&status,sizeof(status))){
+        Error("NTPWR S5 preparation");return FALSE;
+    }
+    Print("NTPWR: S5 preparation status=");PrintHex(status);Print("\r\n");
+    return status==0;
 }
 static BOOL QueryHook(PROBE *p) {
     NTPWR_REPORT report;
@@ -559,10 +572,11 @@ static void PrintProbe(const PROBE *p) {
         Print("probe incomplete; stage=");PrintDecimal(p->stage);
         Print(" init=");PrintHex(p->init);
         Print(" load=");PrintHex(p->load);
+        Print(" namespace=");PrintHex(p->ns);
         Print(" eval=");PrintHex(p->eval);Print("\r\n");
     }
     Print("NTPWR: APM not implemented\r\n");
-    Print("NTPWR: ACPI QEMU PIIX4 ");Print(p->backend?"ready\r\n":"not ready\r\n");
+    Print("NTPWR: ACPI S5 ");Print(p->backend?"registers mapped\r\n":"not ready\r\n");
 }
 static BOOL Run(LPCSTR action) {
     SC_HANDLE m=Manager();BOOL ok=FALSE;
@@ -571,13 +585,16 @@ static BOOL Run(LPCSTR action) {
     else if(Equals(action,"START"))ok=Start(m);
     else if(Equals(action,"STOP"))ok=Stop(m);
     else if(Equals(action,"REMOVE"))ok=RemoveFull(m);
+    else if(Equals(action,"PREPARE"))ok=KernelPrepare();
     else if(Equals(action,"SCAN")){
         ok=Scan(m,&g_probe);PrintProbe(&g_probe);
     }else if(Equals(action,"INFO")||Equals(action,"RESULT")){
         BOOL found=FALSE,running=FALSE;
         if(ServiceState(m,&found,&running)&&found&&running){
             g_probe.installed=found;g_probe.running=running;
-            ok=ReadProbe(&g_probe);PrintProbe(&g_probe);
+            ok=ReadProbe(&g_probe);
+            if(ok)QueryHook(&g_probe);
+            PrintProbe(&g_probe);
         }else{
             ok=Scan(m,&g_probe);PrintProbe(&g_probe);
         }
@@ -621,8 +638,8 @@ static const void *MainTemplate(void){
     return g_main_storage;
 }
 static const void *InfoTemplate(void){
-    Begin((BYTE *)g_info_storage,19,295,220,"NTPWR - Information");
-    Control(BS_GROUPBOX,8,7,279,177,30,0x80,"Diagnostics");
+    Begin((BYTE *)g_info_storage,21,295,239,"NTPWR - Information");
+    Control(BS_GROUPBOX,8,7,279,196,30,0x80,"Diagnostics");
     Control(SS_LEFT,16,24,72,12,31,0x82,"Windows:");
     Control(SS_LEFT,96,24,177,12,IDC_OS,0x82,"");
     Control(SS_LEFT,16,43,72,12,32,0x82,"ACPI:");
@@ -639,8 +656,10 @@ static const void *InfoTemplate(void){
     Control(SS_LEFT,96,138,177,12,IDC_BACKEND,0x82,"");
     Control(SS_LEFT,16,157,72,12,38,0x82,"Shutdown hook:");
     Control(SS_LEFT,96,157,177,12,IDC_HOOK,0x82,"");
-    Control(BS_PUSHBUTTON|WS_TABSTOP,91,192,75,17,IDC_REFRESH,0x80,"Refresh");
-    Control(BS_DEFPUSHBUTTON|WS_TABSTOP,197,192,88,17,IDCANCEL,0x80,"Close");
+    Control(SS_LEFT,16,176,72,12,39,0x82,"Namespace:");
+    Control(SS_LEFT,96,176,177,12,IDC_NAMESPACE,0x82,"");
+    Control(BS_PUSHBUTTON|WS_TABSTOP,91,211,75,17,IDC_REFRESH,0x80,"Refresh");
+    Control(BS_DEFPUSHBUTTON|WS_TABSTOP,197,211,88,17,IDCANCEL,0x80,"Close");
     return g_info_storage;
 }
 static void Text(HWND wnd,int id,LPCSTR val){SetDlgItemTextA(wnd,id,val);}
@@ -648,7 +667,7 @@ static void UpdateMain(HWND wnd){
     Text(wnd,IDC_DRIVER,g_probe.installed?(g_probe.running?"Running":"Installed (stopped)"):"Not installed");
     Text(wnd,IDC_ACPI,!g_probe.scanned?"Not scanned":g_probe.stage==4?"Detected, AML initialized":"Scan incomplete");
     Text(wnd,IDC_APM,"Not implemented");
-    Text(wnd,IDC_METHOD,g_probe.backend?"ACPI S5 (QEMU PIIX4)":"None");
+    Text(wnd,IDC_METHOD,g_probe.backend?"ACPI S5":"None");
     Text(wnd,IDC_POWER,g_probe.hook_active?"Enabled":"Disabled");
     EnableWindow(GetDlgItem(wnd,IDC_INSTALL),!g_probe.installed);
     EnableWindow(GetDlgItem(wnd,IDC_REMOVE),g_probe.installed);
@@ -680,7 +699,9 @@ static void UpdateInfo(HWND wnd){
         Text(wnd,IDC_S5,s);
     }
     Text(wnd,IDC_APMDETAIL,"Not implemented");
-    Text(wnd,IDC_BACKEND,g_probe.backend?"ACPI S5 (QEMU PIIX4)":"Unsupported");
+    if(g_probe.scanned){HexToText(g_probe.ns,s);Text(wnd,IDC_NAMESPACE,s);}
+    else Text(wnd,IDC_NAMESPACE,"Unavailable");
+    Text(wnd,IDC_BACKEND,g_probe.backend?"ACPI S5 registers mapped":"Unsupported");
     Text(wnd,IDC_HOOK,g_probe.hook_active?"Active":"Inactive");
 }
 static BOOL Refresh(void){
@@ -744,8 +765,8 @@ void __cdecl Entry(void){
     }
     if(!Equals(arg,"INSTALL")&&!Equals(arg,"START")&&!Equals(arg,"STOP")&&
        !Equals(arg,"REMOVE")&&!Equals(arg,"STATUS")&&!Equals(arg,"SCAN")&&
-       !Equals(arg,"INFO")&&!Equals(arg,"RESULT")){
-        Print("Usage: NTPWR [SCAN|INFO|INSTALL|START|STATUS|STOP|REMOVE]\r\n");
+       !Equals(arg,"INFO")&&!Equals(arg,"RESULT")&&!Equals(arg,"PREPARE")){
+        Print("Usage: NTPWR [SCAN|INFO|INSTALL|START|STATUS|STOP|REMOVE|PREPARE]\r\n");
         CliExit(2);
     }
     ResetFailure();

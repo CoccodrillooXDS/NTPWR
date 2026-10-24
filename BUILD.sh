@@ -36,7 +36,7 @@ RDIR="$("$CC" -print-resource-dir)"
 FLAGS=(--target=i386-pc-windows-msvc -march=i486 -mno-sse -mno-sse2
    -std=gnu11 -ffreestanding -fno-builtin -fno-stack-protector
    -fms-extensions -O1 -nostdinc -isystem "$RDIR/include"
-   -DUACPI_REDUCED_HARDWARE -DUACPI_NATIVE_MMIO)
+   -DUACPI_NATIVE_MMIO)
 B="$ROOT/build"
 LINK_ROOT="$ROOT"
 LINK_B="$B"
@@ -58,10 +58,30 @@ done
 "$CC" "${FLAGS[@]}" -c "$ROOT/driver/nt351_interlocked.c" -o "$B/interlocked.obj"
 SOURCES=(tables types uacpi utilities interpreter opcodes namespace stdlib
   opregion default_handlers io notify sleep registers resources event mutex osi)
+UACPI_S5_SOURCE="$B/ntpwr_uacpi.c"
+python3 - "$SRC/source/uacpi.c" "$UACPI_S5_SOURCE" <<'PY'
+from pathlib import Path
+import sys
+
+source = Path(sys.argv[1]).read_text()
+start = "    ret = uacpi_initialize_events();\n"
+end = "    g_uacpi_rt_ctx.init_level = UACPI_INIT_LEVEL_NAMESPACE_LOADED;\n"
+begin = source.find(start)
+finish = source.find(end, begin)
+if begin < 0 or finish < 0 or source.find(start, begin + len(start)) >= 0:
+    raise SystemExit("Unsupported uACPI namespace initialization")
+block = source[begin:finish]
+if 'goto out_fatal_error;' not in block:
+    raise SystemExit("Unexpected uACPI event initialization")
+source = source[:begin] + "#ifndef NTPWR_S5_ONLY\n" + block + "#endif\n" + source[finish:]
+Path(sys.argv[2]).write_text(source)
+PY
 UOBJS=()
 for name in "${SOURCES[@]}"; do
-    "$CC" "${FLAGS[@]}" -I "$SRC/include" -I "$SRC/source" \
-        -c "$SRC/source/$name.c" -o "$B/$name.obj"
+    unit="$SRC/source/$name.c"
+    if [[ "$name" == uacpi ]]; then unit="$UACPI_S5_SOURCE"; fi
+    "$CC" "${FLAGS[@]}" -DNTPWR_S5_ONLY -I "$SRC/include" -I "$SRC/source" \
+        -c "$unit" -o "$B/$name.obj"
     UOBJS+=("$LINK_B/$name.obj")
     printf 'PASS  %s.c\n' "$name"
 done
