@@ -21,6 +21,8 @@
 #define SPI_MIN_SIZE 0x88UL
 #define LEGACY_STUB_LENGTH 22UL
 #define STUB_LENGTH 68UL
+#define RTM_STUB_LENGTH 71UL
+#define RTM_PATCH_LENGTH 8UL
 #define STUB_HANDLE_OFFSET 46UL
 #define STUB_FUNCTION_OFFSET 51UL
 #define STUB_JUMP_OFFSET 64UL
@@ -185,7 +187,7 @@ static void BuildLegacyStub(BYTE *Stub, DWORD StubAddress,
 }
 
 static void BuildStub(BYTE *Stub, DWORD StubAddress, DWORD PatchAddress,
-                      BOOL Nt4, DWORD RemoteHandle, DWORD NtIoctl)
+                      BOOL Nt4, BOOL Rtm, DWORD RemoteHandle, DWORD NtIoctl)
 {
     static const BYTE Template[STUB_LENGTH] = {
         0x8B,0x5C,0x24,0x14,0x9C,0x83,0xFB,0x05,0x75,0x33,
@@ -196,6 +198,17 @@ static void BuildStub(BYTE *Stub, DWORD StubAddress, DWORD PatchAddress,
         0x10,0x61,0x9D,0x53,0xE9,0,0,0,0
     };
     DWORD I;
+    if (Rtm) {
+        static const BYTE Prefix[] = {0x8B,0x74,0x24,0x10};
+        for (I = 0; I < sizeof(Prefix); ++I) Stub[I] = Prefix[I];
+        for (I = 0; I < 62UL; ++I) Stub[4UL + I] = Template[I];
+        Stub[66] = 0xE9;
+        StoreDword(Stub, STUB_HANDLE_OFFSET + 4UL, RemoteHandle);
+        StoreDword(Stub, STUB_FUNCTION_OFFSET + 4UL, NtIoctl);
+        StoreDword(Stub, 67UL, (PatchAddress + RTM_PATCH_LENGTH) -
+                            (StubAddress + RTM_STUB_LENGTH));
+        return;
+    }
     for (I = 0; I < STUB_LENGTH; ++I) Stub[I] = Template[I];
     if (Nt4) {
         Stub[1] = 0x74; Stub[3] = 0x18;
@@ -208,27 +221,30 @@ static void BuildStub(BYTE *Stub, DWORD StubAddress, DWORD PatchAddress,
 }
 
 static BOOL ReadVerifiedStub(HANDLE Process, DWORD PatchAddress,
-                             const BYTE *PatchBytes, BOOL Nt4,
+                             const BYTE *PatchBytes, BOOL Nt4, BOOL Rtm,
                              DWORD *StubAddress, DWORD *RemoteHandle,
                              BOOL *Modern)
 {
-    BYTE Actual[STUB_LENGTH], Expected[STUB_LENGTH];
-    DWORD Target;
+    BYTE Actual[RTM_STUB_LENGTH], Expected[RTM_STUB_LENGTH];
+    DWORD Target, Length = Rtm ? RTM_STUB_LENGTH : STUB_LENGTH;
+    DWORD HandleOffset = STUB_HANDLE_OFFSET + (Rtm ? 4UL : 0UL);
+    DWORD FunctionOffset = STUB_FUNCTION_OFFSET + (Rtm ? 4UL : 0UL);
     if (PatchBytes[0] != 0xE9) return FALSE;
     Target = PatchAddress + 5UL + Dword(PatchBytes, 1);
     if (Target < 0x10000UL || Target >= 0x80000000UL) return FALSE;
-    if (!Read(Process, Target, Actual, STUB_LENGTH)) return FALSE;
+    if (!Read(Process, Target, Actual, Length)) return FALSE;
 
-    BuildStub(Expected, Target, PatchAddress, Nt4,
-              Dword(Actual, STUB_HANDLE_OFFSET),
-              Dword(Actual, STUB_FUNCTION_OFFSET));
-    if (SameBytes(Actual, Expected, STUB_LENGTH)) {
+    BuildStub(Expected, Target, PatchAddress, Nt4, Rtm,
+              Dword(Actual, HandleOffset),
+              Dword(Actual, FunctionOffset));
+    if (SameBytes(Actual, Expected, Length)) {
         *StubAddress = Target;
-        *RemoteHandle = Dword(Actual, STUB_HANDLE_OFFSET);
+        *RemoteHandle = Dword(Actual, HandleOffset);
         *Modern = TRUE;
         return TRUE;
     }
 
+    if (Rtm) return FALSE;
     BuildLegacyStub(Expected, Target, PatchAddress, Nt4);
     if (!SameBytes(Actual, Expected, LEGACY_STUB_LENGTH)) return FALSE;
     *StubAddress = Target;
