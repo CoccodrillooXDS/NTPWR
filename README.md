@@ -56,6 +56,8 @@ To rebuild only the user-mode executable:
 bash BUILD-EXE.sh
 ```
 
+Both binaries embed Windows version information from `include/ntpwr_version.h`.
+
 `BUILD.sh` pins uACPI 7.0.0 to commit `686a9a52d9ad72690406d7cada82801377d5e2fa`. GitHub Actions builds both binaries on Ubuntu, macOS and Windows, and uploads the results as workflow artifacts.
 
 ## Usage
