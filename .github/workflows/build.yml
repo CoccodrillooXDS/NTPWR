@@ -52,6 +52,13 @@ jobs:
           LLD_LINK: ${{ runner.os == 'Linux' && 'lld-link-17' || 'lld-link' }}
         run: bash BUILD.sh
 
+      - name: Verify EXE-only build
+        shell: bash
+        env:
+          CLANG: ${{ runner.os == 'Linux' && 'clang-17' || 'clang' }}
+          LLD_LINK: ${{ runner.os == 'Linux' && 'lld-link-17' || 'lld-link' }}
+        run: bash BUILD-EXE.sh
+
       - name: Upload binaries
         uses: actions/upload-artifact@v4
         with:

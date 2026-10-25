@@ -1,0 +1,8 @@
+#ifndef NTPWR_VERSION_H
+#define NTPWR_VERSION_H
+
+#define NTPWR_VERSION_MAJOR 0
+#define NTPWR_VERSION_MINOR 3
+#define NTPWR_VERSION_PATCH 0
+
+#endif

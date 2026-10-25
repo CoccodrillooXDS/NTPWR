@@ -17,6 +17,7 @@ if [[ "${OSTYPE:-}" == msys* || -n "${MSYSTEM:-}" ]]; then
     LINK_ROOT="$(cygpath -m "$ROOT")"
     LINK_B="$(cygpath -m "$B")"
 fi
+python3 "$ROOT/tools/version_resource.py" "$ROOT/include/ntpwr_version.h" "$B/ntpwr-exe.res" exe
 "$CC" --target=i386-pc-windows-msvc -march=i486 -mno-sse -mno-sse2 \
   -ffreestanding -fno-builtin -fno-stack-protector -O1 -Wall -Wextra -Werror \
   -c "$ROOT/app/ntpwr.c" -o "$B/ntpwr_cli.obj"
@@ -39,6 +40,8 @@ EXPORTS
     GetSystemDirectoryA
     CopyFileA
     DeleteFileA
+    GetFileAttributesA
+    SetFileAttributesA
     Sleep
     GetModuleHandleA
     GetVersionExA
@@ -51,6 +54,7 @@ EXPORTS
     HeapAlloc
     HeapFree
     OpenProcess
+    DuplicateHandle
     ReadProcessMemory
     WriteProcessMemory
     CreateEventA
@@ -104,8 +108,10 @@ for name in KERNEL32 ADVAPI32 USER32; do
 done
 user_imports=(GetStdHandle:4 WriteFile:20 FreeConsole:0 GetLastError:0 ExitProcess:4
   GetCommandLineA:0 GetModuleFileNameA:12 GetSystemDirectoryA:8
-  CopyFileA:12 DeleteFileA:4 Sleep:4 GetModuleHandleA:4 GetVersionExA:4
+  CopyFileA:12 DeleteFileA:4 GetFileAttributesA:4 SetFileAttributesA:8
+  Sleep:4 GetModuleHandleA:4 GetVersionExA:4
   CloseHandle:4 CreateFileA:28 DeviceIoControl:32 GetCurrentProcess:0
+  DuplicateHandle:28
   GetProcAddress:8 GetProcessHeap:0 HeapAlloc:12 HeapFree:12 OpenProcess:12
   ReadProcessMemory:20 WriteProcessMemory:20 CreateEventA:16 ResetEvent:4
   SetEvent:4 WaitForSingleObject:8 SetLastError:4 lstrcmpiA:8 lstrlenA:4
@@ -126,18 +132,6 @@ done
 MSYS2_ARG_CONV_EXCL="*" "$LD" /nologo /machine:x86 /subsystem:console,3.51 /osversion:3.51 \
   /entry:Entry /nodefaultlib /dynamicbase:no /nxcompat:no /safeseh:no \
   "/out:$LINK_ROOT/DIST/NTPWR.EXE" "$LINK_B/ntpwr_cli.obj" \
-  "$LINK_B/ntpwr_remap.obj" "$LINK_B/ntpwr_service.obj" "$LINK_B/runtime.obj" \
+  "$LINK_B/ntpwr_remap.obj" "$LINK_B/ntpwr_service.obj" "$LINK_B/runtime.obj" "$LINK_B/ntpwr-exe.res" \
   "$LINK_B/KERNEL32.stub.lib" "$LINK_B/ADVAPI32.stub.lib" "$LINK_B/USER32.stub.lib" "${user_aliases[@]}"
-python3 - "$ROOT/DIST/NTPWR.EXE" <<'PYTHON'
-from pathlib import Path
-import struct,sys
-p=Path(sys.argv[1]); b=p.read_bytes()
-pe=struct.unpack_from('<I',b,0x3c)[0]
-assert b[:2]==b'MZ' and b[pe:pe+4]==b'PE\0\0'
-assert struct.unpack_from('<H',b,pe+4)[0]==0x14c
-op=pe+24
-sub=struct.unpack_from('<H',b,op+68)[0]
-assert sub==3, f'expected Windows console subsystem, got {sub}'
-assert struct.unpack_from('<HH',b,op+48)==(3,51)
-print(f'PASS {p.name}: PE32 i386, console subsystem, NT 3.51')
-PYTHON
+python3 "$ROOT/tools/check_pe.py" "$ROOT/DIST/NTPWR.EXE"
