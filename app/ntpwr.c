@@ -150,6 +150,7 @@ IMPORT HANDLE WINAPI CreateFileA(LPCSTR,DWORD,DWORD,LPVOID,DWORD,DWORD,HANDLE);
 IMPORT BOOL WINAPI DeviceIoControl(HANDLE,DWORD,LPVOID,DWORD,LPVOID,DWORD,LPDWORD,LPVOID);
 IMPORT BOOL WINAPI CloseHandle(HANDLE);
 extern BOOL NtpwrRunService(void);
+extern BOOL NtpwrRemapAction(LPCSTR);
 
 IMPORT LONG WINAPI DialogBoxIndirectParamA(HANDLE, const void *, HWND, DLGPROC, LPARAM);
 IMPORT BOOL WINAPI EndDialog(HWND, LONG);
@@ -503,7 +504,7 @@ static BOOL AgentInstall(SC_HANDLE manager, BOOL *rollbackSafe) {
     CloseServiceHandle(service);
     return TRUE;
 rollback:
-    if(!StopAgent(service)){
+    if(!StopAgent(service) || !NtpwrRemapAction("RESTORE")){
         *rollbackSafe=FALSE;
         Fail("NTPWRAgent rollback incomplete");
     }else if(!DeleteService(service)){
