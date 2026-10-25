@@ -347,7 +347,8 @@ static NTSTATUS PvArm(BOOLEAN Experimental)
         !(g_Report.Flags & NTPWR_FLAG_COMPATIBLE))
         return STATUS_NOT_SUPPORTED;
     if (!(g_Report.Flags & NTPWR_FLAG_KNOWN) &&
-        !(g_Report.Flags & NTPWR_FLAG_IMPORT))
+        !(g_Report.Flags & NTPWR_FLAG_IMPORT) &&
+        !(Experimental && (g_Report.Flags & NTPWR_FLAG_FILE_IMPORT)))
         return STATUS_NOT_SUPPORTED;
     if (g_Report.IatAddress == 0)
         return STATUS_NOT_SUPPORTED;
