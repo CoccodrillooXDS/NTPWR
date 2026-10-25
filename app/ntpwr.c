@@ -1,5 +1,6 @@
 /* NTPWR installer and Winlogon-aware ACPI shutdown controller. */
 #include "../driver/ntpwr_hook.h"
+#include "../include/ntpwr_version.h"
 typedef unsigned long DWORD;
 typedef unsigned short WORD;
 typedef unsigned int UINT;
@@ -749,7 +750,8 @@ static void Begin(BYTE *buf,WORD count,WORD width,WORD height,LPCSTR name){
     D(0);W(count);W(0);W(0);W(width);W(height);W(0);W(0);T(name);
 }
 static const void *MainTemplate(void){
-    Begin((BYTE *)g_main_storage,15,274,164,"NT Power Management Driver");
+    Begin((BYTE *)g_main_storage,15,274,164,
+          "NT Power Management Driver - " NTPWR_VERSION_DISPLAY);
     Control(BS_GROUPBOX,8,7,258,120,20,0x80,"Status");
     Control(SS_LEFT,17,25,69,12,21,0x82,"Driver:");
     Control(SS_LEFT,91,25,165,12,IDC_DRIVER,0x82,"");
@@ -768,7 +770,8 @@ static const void *MainTemplate(void){
     return g_main_storage;
 }
 static const void *InfoTemplate(void){
-    Begin((BYTE *)g_info_storage,21,295,239,"NTPWR - Information");
+    Begin((BYTE *)g_info_storage,21,295,239,
+          "NTPWR - Information - " NTPWR_VERSION_DISPLAY);
     Control(BS_GROUPBOX,8,7,279,196,30,0x80,"Diagnostics");
     Control(SS_LEFT,16,24,72,12,31,0x82,"Windows:");
     Control(SS_LEFT,96,24,177,12,IDC_OS,0x82,"");
