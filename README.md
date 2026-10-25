@@ -78,6 +78,8 @@ NTPWR.EXE REMOVE
 
 `WINLOGON` inspects the active Winlogon shutdown patch site without modifying it. `RESULT`, `START` and `STOP` are also available for diagnostics. A running driver with an active kernel hook cannot be unloaded normally. If command-line output is unavailable, inspect `NTPWR-CLI.LOG` in the current directory.
 
+`NTPWR.EXE SERIAL COM1` through `COM4` enable optional serial diagnostics (115200 8N1); `NTPWR.EXE SERIAL OFF` disables them. The setting is saved under the NTPWR service as the `SerialPort` DWORD (0–4) and restored when the driver loads. The selected serial port must not be in use by another device or driver. Debug output on I/O port `0xE9` remains enabled.
+
 Use a VM snapshot when evaluating an untested operating system or firmware configuration.
 
 ## Limitations

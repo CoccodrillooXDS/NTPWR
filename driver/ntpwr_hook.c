@@ -595,7 +595,8 @@ static VOID PvUnload(PDRIVER_OBJECT DriverObject)
     UNREFERENCED_PARAMETER(DriverObject);
 }
 
-static BOOLEAN PvAutoArmEnabled(PUNICODE_STRING RegistryPath)
+static BOOLEAN PvReadOption(PUNICODE_STRING RegistryPath,
+                            const WCHAR *Name, PULONG Data)
 {
     OBJECT_ATTRIBUTES Attributes;
     UNICODE_STRING ValueName;
@@ -604,27 +605,30 @@ static BOOLEAN PvAutoArmEnabled(PUNICODE_STRING RegistryPath)
     ULONG Size = 0;
     UCHAR Buffer[sizeof(KEY_VALUE_PARTIAL_INFORMATION) + sizeof(ULONG)];
     PKEY_VALUE_PARTIAL_INFORMATION Value;
-    BOOLEAN Enabled = FALSE;
+    BOOLEAN Found = FALSE;
 
     InitializeObjectAttributes(&Attributes, RegistryPath,
                                OBJ_CASE_INSENSITIVE, NULL, NULL);
     Status = ZwOpenKey(&Key, KEY_QUERY_VALUE, &Attributes);
     if (!NT_SUCCESS(Status)) return FALSE;
-    RtlInitUnicodeString(&ValueName, L"AutoArm");
+    RtlInitUnicodeString(&ValueName, Name);
     Status = ZwQueryValueKey(Key, &ValueName, KeyValuePartialInformation,
                              Buffer, sizeof(Buffer), &Size);
     if (NT_SUCCESS(Status)) {
         Value = (PKEY_VALUE_PARTIAL_INFORMATION)Buffer;
-        if (Value->Type == REG_DWORD && Value->DataLength == sizeof(ULONG))
-            Enabled = (*(PULONG)Value->Data == 1UL);
+        if (Value->Type == REG_DWORD && Value->DataLength == sizeof(ULONG)) {
+            *Data = *(PULONG)Value->Data;
+            Found = TRUE;
+        }
     }
     ZwClose(Key);
-    return Enabled;
+    return Found;
 }
 
 NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
 {
     NTSTATUS Status;
+    ULONG SerialPort = 0, AutoArm = 0;
     RtlInitUnicodeString(&g_DeviceName, L"\\Device\\NTPWR");
     RtlInitUnicodeString(&g_SymbolicName, L"\\DosDevices\\NTPWR");
     Status = IoCreateDevice(DriverObject, 0, &g_DeviceName,
@@ -641,9 +645,14 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
     DriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = PvDispatch;
     g_Driver = DriverObject;
     DriverObject->DriverUnload = PvUnload;
+    if (PvReadOption(RegistryPath, L"SerialPort", &SerialPort) &&
+        SerialPort != 0 && SerialPort <= 4UL) {
+        if (!NT_SUCCESS(PvConfigureSerial(SerialPort)))
+            PvLog("NTPWR: Serial debug unavailable\r\n");
+    }
     (void)NtpwrProbeInitialize(DriverObject, RegistryPath);
     PvScan();
-    if (PvAutoArmEnabled(RegistryPath)) {
+    if (PvReadOption(RegistryPath, L"AutoArm", &AutoArm) && AutoArm == 1UL) {
         if (!NT_SUCCESS(PvArm(FALSE))) {
             PvLog("NTPWR: Automatic hook failed; result=");
             PvLogHex(g_Report.Result);

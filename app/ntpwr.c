@@ -462,9 +462,9 @@ static BOOL KernelHook(DWORD action,NTPWR_REPORT *out) {
     return ok;
 }
 static BOOL ConfigureSerial(LPCSTR action) {
-    DWORD port, count = 0;
+    DWORD port, count = 0, result;
     LPCSTR name;
-    HANDLE device;
+    HANDLE device, key = NULL;
     BOOL ok;
     if (Equals(action,"SERIAL OFF")) {port=0;name="Off";}
     else if (Equals(action,"SERIAL COM1")) {port=1;name="COM1";}
@@ -479,9 +479,21 @@ static BOOL ConfigureSerial(LPCSTR action) {
     ok=DeviceIoControl(device,NTPWR_IOCTL_SERIAL_DEBUG,
                        &port,sizeof(port),NULL,0,&count,NULL);
     if (!ok) Error("Serial debug");
-    else {Print("Serial debug: ");Print(name);Print("\r\n");}
     CloseHandle(device);
-    return ok;
+    if (!ok) return FALSE;
+    result=RegOpenKeyExA(HKEY_LOCAL_MACHINE,
+        "SYSTEM\\CurrentControlSet\\Services\\NTPWR",0,KEY_SET_VALUE,&key);
+    if (result==0) {
+        result=RegSetValueExA(key,"SerialPort",0,REG_DWORD,
+                             (const BYTE *)&port,sizeof(port));
+        RegCloseKey(key);
+    }
+    if (result!=0) {
+        Print("Serial setting not saved: ");PrintHex(result);Print("\r\n");
+        return FALSE;
+    }
+    Print("Serial debug: ");Print(name);Print(" (saved)\r\n");
+    return TRUE;
 }
 
 static BOOL QueryHook(PROBE *p) {

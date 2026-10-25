@@ -1,6 +1,8 @@
 #include <uacpi/kernel_api.h>
 #include "nt351_kernel_abi.h"
 
+extern void __cdecl NtpwrTraceAcpiStatus(const char *, unsigned long);
+
 #define NT351_PCI_TAG 0x49504355UL
 #define NT351_PCI_CONFIG_BYTES 256U
 
@@ -72,17 +74,20 @@ uacpi_status __cdecl uacpi_kernel_pci_write8(
     uacpi_handle handle, uacpi_size offset, uacpi_u8 value)
 {
     (void)handle; (void)offset; (void)value;
+    NtpwrTraceAcpiStatus("PCI write8 denied offset", (unsigned long)offset);
     return UACPI_STATUS_DENIED;
 }
 uacpi_status __cdecl uacpi_kernel_pci_write16(
     uacpi_handle handle, uacpi_size offset, uacpi_u16 value)
 {
     (void)handle; (void)offset; (void)value;
+    NtpwrTraceAcpiStatus("PCI write16 denied offset", (unsigned long)offset);
     return UACPI_STATUS_DENIED;
 }
 uacpi_status __cdecl uacpi_kernel_pci_write32(
     uacpi_handle handle, uacpi_size offset, uacpi_u32 value)
 {
     (void)handle; (void)offset; (void)value;
+    NtpwrTraceAcpiStatus("PCI write32 denied offset", (unsigned long)offset);
     return UACPI_STATUS_DENIED;
 }
