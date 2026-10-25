@@ -1,12 +1,12 @@
 #include "../include/ntpwr_win32.h"
 
 #define NT351_BASE  0x02160000UL
-#define NT351_PATCH 0x02164272UL
+#define NT351_PATCH_RVA 0x00004272UL
 #define NT351_STAMP 0x32275244UL
 #define NT351_CHECK 0x00038230UL
 #define NT351_SIZE  0x0002C000UL
 #define NT4_BASE    0x01000000UL
-#define NT4_PATCH   0x0100180CUL
+#define NT4_PATCH_RVA   0x0000180CUL
 #define NT4_STAMP   0x3B293B47UL
 #define NT4_CHECK   0x0003D41DUL
 #define NT4_SIZE    0x00033000UL
@@ -49,6 +49,7 @@
 #endif
 
 typedef LONG (WINAPI *NT_QUERY_SYSTEM_INFORMATION)(ULONG, PVOID, ULONG, PULONG);
+typedef LONG (WINAPI *NT_QUERY_INFORMATION_PROCESS)(HANDLE, ULONG, PVOID, ULONG, PULONG);
 typedef LONG (WINAPI *NT_ALLOCATE_VIRTUAL_MEMORY)(HANDLE, PVOID *, ULONG,
                                                     ULONG *, ULONG, ULONG);
 typedef LONG (WINAPI *NT_FREE_VIRTUAL_MEMORY)(HANDLE, PVOID *, ULONG *, ULONG);
@@ -65,6 +66,8 @@ static PROTECT_EX g_ProtectEx = NULL;
 static NT_FREE_VIRTUAL_MEMORY g_NtFree = NULL;
 static FLUSH_ICACHE g_Flush = NULL;
 static LPVOID g_NtDeviceIoControlFile = NULL;
+static NT_QUERY_INFORMATION_PROCESS g_QueryProcess = NULL;
+static BOOL g_Nt4 = FALSE;
 
 static void Out(const char *String)
 {
@@ -288,7 +291,26 @@ static BOOL ReplaceCode(HANDLE Process, DWORD Address, const BYTE *NewBytes,
     return Success && ProtectionRestored;
 }
 
-static BOOL CheckImage(HANDLE Process, DWORD Base, DWORD Patch,
+static BOOL ExecutablePatch(HANDLE Process, DWORD Base, DWORD PeOffset,
+                            DWORD OptSize, DWORD Sections, DWORD PatchRva)
+{
+    BYTE Section[40];
+    DWORD I;
+    for (I = 0; I < Sections; ++I) {
+        DWORD Rva, Size;
+        if (!Read(Process, Base + PeOffset + 24UL + OptSize + I * 40UL,
+                  Section, sizeof(Section)))
+            return FALSE;
+        Rva = Dword(Section, 12);
+        Size = Dword(Section, 8);
+        if (Size < 5UL || PatchRva < Rva || PatchRva - Rva > Size - 5UL)
+            continue;
+        return (Dword(Section, 36) & 0x20000020UL) == 0x20000020UL;
+    }
+    return FALSE;
+}
+
+static BOOL CheckImage(HANDLE Process, DWORD Base, DWORD PatchRva,
                        DWORD Timestamp, DWORD Checksum, DWORD Size,
                        const BYTE *Original, DWORD Pid, BOOL Nt4,
                        const char *Name)
@@ -299,7 +321,8 @@ static BOOL CheckImage(HANDLE Process, DWORD Base, DWORD Patch,
     BYTE Jump[5];
     BYTE Stub[STUB_LENGTH];
     BYTE Verify[STUB_LENGTH];
-    DWORD PeOffset;
+    DWORD PeOffset, Patch, ImageSize, Sections, OptSize;
+    BOOL Known;
     DWORD StubAddress = 0, RemoteHandle = 0;
     HANDLE DeviceHandle = INVALID_HANDLE_VALUE;
     BOOL IsOriginal;
@@ -316,16 +339,26 @@ static BOOL CheckImage(HANDLE Process, DWORD Base, DWORD Patch,
     if (PeOffset < 64UL || PeOffset > 0x1000UL) return FALSE;
     if (!Read(Process, Base + PeOffset, Nt, sizeof(Nt))) return FALSE;
     if (Dword(Nt, 0) != 0x00004550UL ||
-        Dword(Nt, 8) != Timestamp ||
-        Dword(Nt, 24 + 56) != Size ||
-        Dword(Nt, 24 + 64) != Checksum)
+        Word(Nt, 4) != 0x014CUL || Word(Nt, 24) != 0x010B)
         return FALSE;
+    Sections = Word(Nt, 6);
+    OptSize = Word(Nt, 20);
+    ImageSize = Dword(Nt, 24 + 56);
+    if (Sections == 0 || Sections > 32UL || OptSize < 0xE0UL ||
+        OptSize > 0x200UL || ImageSize < 0x10000UL ||
+        ImageSize > 0x400000UL || PatchRva > ImageSize - 5UL ||
+        !ExecutablePatch(Process, Base, PeOffset, OptSize, Sections, PatchRva))
+        return FALSE;
+    Known = Dword(Nt, 8) == Timestamp &&
+            Dword(Nt, 24 + 64) == Checksum && ImageSize == Size;
+    Patch = Base + PatchRva;
 
     Out("Winlogon: "); Out(Name);
     Out("\r\nPID: "); Hex(Pid);
     Out("\r\nImage base: "); Hex(Base);
-    Out("\r\nPE timestamp: "); Hex(Timestamp);
-    Out("\r\nPE checksum: "); Hex(Checksum);
+    Out("\r\nPE timestamp: "); Hex(Dword(Nt, 8));
+    Out("\r\nPE checksum: "); Hex(Dword(Nt, 24 + 64));
+    Out("\r\nImage profile: "); Out(Known ? "verified" : "structural (unverified)");
     Out("\r\nPatch address: "); Hex(Patch);
     if (!Read(Process, Patch, Site, sizeof(Site))) {
         Out("\r\nReadProcessMemory failed: "); Hex(GetLastError());
@@ -528,7 +561,8 @@ static BOOL InspectPid(DWORD Pid)
     static const BYTE NT351Bytes[5] = {0x8B, 0x5C, 0x24, 0x14, 0x53};
     static const BYTE NT4Bytes[5] = {0x8B, 0x74, 0x24, 0x18, 0x56};
     HANDLE Process;
-    DWORD Rights;
+    DWORD Rights, Base = 0, Basic[6], Returned = 0;
+    BYTE ImageBase[4];
     BOOL Found = FALSE;
 
     Rights = PROCESS_QUERY_INFORMATION | PROCESS_VM_READ;
@@ -540,12 +574,18 @@ static BOOL InspectPid(DWORD Pid)
         Out("\r\nResult: FAILED\r\n");
         return FALSE;
     }
-    Found = CheckImage(Process, NT351_BASE, NT351_PATCH, NT351_STAMP,
-                       NT351_CHECK, NT351_SIZE, NT351Bytes, Pid, FALSE,
-                       "NT 3.51") ||
-            CheckImage(Process, NT4_BASE, NT4_PATCH, NT4_STAMP,
-                       NT4_CHECK, NT4_SIZE, NT4Bytes, Pid, TRUE,
-                       "NT 4.0");
+    if (g_QueryProcess != NULL &&
+        g_QueryProcess(Process, 0, Basic, sizeof(Basic), &Returned) >= 0 &&
+        Basic[1] >= 0x10000UL && Basic[1] < 0x80000000UL &&
+        Read(Process, Basic[1] + 8UL, ImageBase, sizeof(ImageBase)))
+        Base = Dword(ImageBase, 0);
+    if (Base < 0x10000UL || Base >= 0x80000000UL)
+        Base = g_Nt4 ? NT4_BASE : NT351_BASE;
+    Found = g_Nt4 ?
+        CheckImage(Process, Base, NT4_PATCH_RVA, NT4_STAMP,
+                   NT4_CHECK, NT4_SIZE, NT4Bytes, Pid, TRUE, "NT 4.0") :
+        CheckImage(Process, Base, NT351_PATCH_RVA, NT351_STAMP,
+                   NT351_CHECK, NT351_SIZE, NT351Bytes, Pid, FALSE, "NT 3.51");
     if (!Found) Out("Winlogon image: unsupported\r\n");
     CloseHandle(Process);
     return Found;
@@ -587,12 +627,17 @@ BOOL NtpwrRemapAction(LPCSTR Action)
     Out("\r\n");
     ZeroMemory(&Version, sizeof(Version));
     Version.dwOSVersionInfoSize = sizeof(Version);
-    if (GetVersionExA(&Version)) {
-        Out("Windows version: "); Decimal(Version.dwMajorVersion);
-        Out("."); Decimal(Version.dwMinorVersion);
-        Out(" build="); Decimal(Version.dwBuildNumber);
-        Out(" "); Out(Version.szCSDVersion); Out("\r\n");
+    if (!GetVersionExA(&Version) ||
+        !((Version.dwMajorVersion == 3UL && Version.dwMinorVersion == 51UL) ||
+          (Version.dwMajorVersion == 4UL && Version.dwMinorVersion == 0UL))) {
+        Out("Unsupported Windows version\r\n");
+        goto Done;
     }
+    g_Nt4 = Version.dwMajorVersion == 4UL;
+    Out("Windows version: "); Decimal(Version.dwMajorVersion);
+    Out("."); Decimal(Version.dwMinorVersion);
+    Out(" build="); Decimal(Version.dwBuildNumber);
+    Out(" "); Out(Version.szCSDVersion); Out("\r\n");
     DebugPrivilege();
     Kernel32 = GetModuleHandleA("kernel32.dll");
     if (Kernel32 != NULL) {
@@ -607,6 +652,8 @@ BOOL NtpwrRemapAction(LPCSTR Action)
                        Ntdll, "NtFreeVirtualMemory");
         g_NtDeviceIoControlFile =
             GetProcAddress(Ntdll, "NtDeviceIoControlFile");
+        g_QueryProcess = (NT_QUERY_INFORMATION_PROCESS)GetProcAddress(
+            Ntdll, "NtQueryInformationProcess");
     }
     Out("NtAllocateVirtualMemory: "); Out(g_NtAllocate ? "available\r\n" : "unavailable\r\n");
     Out("NtFreeVirtualMemory: "); Out(g_NtFree ? "available\r\n" : "unavailable\r\n");
