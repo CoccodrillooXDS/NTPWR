@@ -63,7 +63,7 @@ Both binaries embed Windows version information from `include/ntpwr_version.h`.
 
 ## Usage
 
-Copy `NTPWR.EXE` and `NTPWR.SYS` from the same build into a directory on the target system. Remove QEMUPWR or an earlier NTPWR installation before installing NTPWR.
+Copy `NTPWR.EXE` and `NTPWR.SYS` from the same build into a directory on the target system. Remove QEMUPWR before installing NTPWR. An existing older NTPWR installation can be upgraded without removing its service settings.
 
 Run `NTPWR.EXE` to open the GUI, or use the command-line interface:
 
@@ -72,9 +72,12 @@ NTPWR.EXE SCAN
 NTPWR.EXE INFO
 NTPWR.EXE WINLOGON
 NTPWR.EXE INSTALL
+NTPWR.EXE UPGRADE
 NTPWR.EXE STATUS
 NTPWR.EXE REMOVE
 ```
+
+`INSTALL` installs NTPWR or upgrades an older installation. `UPGRADE` explicitly upgrades an existing older version; both preserve the NTPWR service settings, including `SerialPort` and `AutoArm`. The GUI shows the installed driver version and offers **Upgrade** when it is older than the running utility. Upgrade requires matching installed driver and agent versions; incompatible installations must be removed manually. Run upgrades from a separate directory, not from `System32`.
 
 `WINLOGON` inspects the active Winlogon shutdown patch site without modifying it. `RESULT`, `START` and `STOP` are also available for diagnostics. A running driver with an active kernel hook cannot be unloaded normally. If command-line output is unavailable, inspect `NTPWR-CLI.LOG` in the current directory.
 

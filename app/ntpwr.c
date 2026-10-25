@@ -102,6 +102,8 @@ typedef LONG (__stdcall *DLGPROC)(HWND, UINT, WPARAM, LPARAM);
 #define IDC_HOOK 307
 #define IDC_MODE 308
 #define IDC_NAMESPACE 309
+#define VERSION_SIGNATURE 0xFEEF04BDUL
+#define VERSION_BUFFER_LIMIT 32768UL
 
 struct SERVICE_STATUS {
     DWORD dwServiceType, dwCurrentState, dwControlsAccepted;
@@ -138,6 +140,12 @@ IMPORT DWORD WINAPI GetFileAttributesA(LPCSTR);
 IMPORT BOOL WINAPI SetFileAttributesA(LPCSTR,DWORD);
 IMPORT void WINAPI Sleep(DWORD);
 IMPORT HANDLE WINAPI GetModuleHandleA(LPCSTR);
+IMPORT HANDLE WINAPI LoadLibraryA(LPCSTR);
+IMPORT BOOL WINAPI FreeLibrary(HANDLE);
+IMPORT LPVOID WINAPI GetProcAddress(HANDLE,LPCSTR);
+IMPORT HANDLE WINAPI GetProcessHeap(void);
+IMPORT LPVOID WINAPI HeapAlloc(HANDLE,DWORD,DWORD);
+IMPORT BOOL WINAPI HeapFree(HANDLE,DWORD,LPVOID);
 IMPORT BOOL WINAPI GetVersionExA(struct OSVERSIONINFOA *);
 IMPORT DWORD WINAPI RegOpenKeyExA(HANDLE, LPCSTR, DWORD, DWORD, HANDLE *);
 IMPORT DWORD WINAPI RegQueryValueExA(HANDLE, LPCSTR, LPDWORD, LPDWORD, BYTE *, LPDWORD);
@@ -177,6 +185,8 @@ static HANDLE g_FallbackLog = (HANDLE)-1;
 static BOOL g_CliMode = FALSE;
 static char g_LastFailure[180];
 static DWORD g_LastErrorCode;
+static BOOL g_InstalledVersionKnown = FALSE;
+static DWORD g_InstalledVersionMS, g_InstalledVersionLS;
 
 
 static DWORD StringLength(LPCSTR s) { DWORD n=0; while(s[n]) ++n; return n; }
@@ -336,6 +346,87 @@ static BOOL DeleteWritable(LPCSTR path) {
        !SetFileAttributesA(path,WritableAttributes(attr)))return FALSE;
     return DeleteFileA(path);
 }
+typedef DWORD (WINAPI *GET_FILE_VERSION_SIZE)(LPCSTR,LPDWORD);
+typedef BOOL (WINAPI *GET_FILE_VERSION)(LPCSTR,DWORD,DWORD,LPVOID);
+typedef BOOL (WINAPI *QUERY_FILE_VERSION)(LPVOID,LPCSTR,LPVOID *,UINT *);
+
+static BOOL ReadVersion(LPCSTR path,DWORD type,DWORD *ms,DWORD *ls) {
+    HANDLE module=LoadLibraryA("VERSION.DLL"),heap;
+    GET_FILE_VERSION_SIZE sizeFn;
+    GET_FILE_VERSION infoFn;
+    QUERY_FILE_VERSION queryFn;
+    DWORD size,unused=0;
+    LPVOID buffer=NULL,info=NULL;
+    UINT length=0;
+    BOOL ok=FALSE;
+    const DWORD *fixed;
+    if(!module)return FALSE;
+    sizeFn=(GET_FILE_VERSION_SIZE)GetProcAddress(module,"GetFileVersionInfoSizeA");
+    infoFn=(GET_FILE_VERSION)GetProcAddress(module,"GetFileVersionInfoA");
+    queryFn=(QUERY_FILE_VERSION)GetProcAddress(module,"VerQueryValueA");
+    if(!sizeFn||!infoFn||!queryFn)goto done;
+    size=sizeFn(path,&unused);
+    if(size<52UL||size>VERSION_BUFFER_LIMIT)goto done;
+    heap=GetProcessHeap();
+    if(!heap)goto done;
+    buffer=HeapAlloc(heap,0,size);
+    if(!buffer)goto done;
+    if(infoFn(path,0,size,buffer)&&
+       queryFn(buffer,"\\",&info,&length)&&info&&length>=52U){
+        fixed=(const DWORD *)info;
+        if(fixed[0]==VERSION_SIGNATURE&&fixed[1]==0x00010000UL&&
+           fixed[9]==type){
+            *ms=fixed[2];*ls=fixed[3];ok=TRUE;
+        }
+    }
+    HeapFree(heap,0,buffer);
+done:
+    FreeLibrary(module);
+    return ok;
+}
+static BOOL InstalledVersion(DWORD *ms,DWORD *ls) {
+    char src[MAX_PATH],dst[MAX_PATH],agent[MAX_PATH];
+    DWORD agentMs,agentLs,n;
+    if(!Paths(src,dst))return FALSE;
+    n=GetSystemDirectoryA(agent,MAX_PATH);
+    if(!n||n>=MAX_PATH||!Append(agent,MAX_PATH,"\\NTPWR.EXE"))
+        return FALSE;
+    if(!ReadVersion(dst,3UL,ms,ls)||
+       !ReadVersion(agent,1UL,&agentMs,&agentLs))
+        return FALSE;
+    return *ms==agentMs && *ls==agentLs;
+}
+static DWORD CurrentVersionMS(void) {
+    return ((DWORD)NTPWR_VERSION_MAJOR<<16)|NTPWR_VERSION_MINOR;
+}
+static DWORD CurrentVersionLS(void) {
+    return ((DWORD)NTPWR_VERSION_PATCH<<16)|NTPWR_VERSION_BUILD;
+}
+static int VersionCompare(DWORD ms,DWORD ls) {
+    DWORD currentMs=CurrentVersionMS(),currentLs=CurrentVersionLS();
+    if(ms<currentMs)return -1;
+    if(ms>currentMs)return 1;
+    return ls<currentLs?-1:ls>currentLs?1:0;
+}
+static void VersionText(char *out,DWORD ms,DWORD ls) {
+    char number[12];
+    out[0]=0;
+    Append(out,100,"v");
+    DecimalToText(ms>>16,number);Append(out,100,number);
+    Append(out,100,".");
+    DecimalToText(ms&0xFFFFUL,number);Append(out,100,number);
+    Append(out,100,".");
+    DecimalToText(ls>>16,number);Append(out,100,number);
+    Append(out,100," build ");
+    DecimalToText(ls&0xFFFFUL,number);Append(out,100,number);
+}
+static BOOL RefreshInstalledVersion(BOOL installed) {
+    g_InstalledVersionKnown=FALSE;
+    if(!installed)return FALSE;
+    g_InstalledVersionKnown=InstalledVersion(&g_InstalledVersionMS,&g_InstalledVersionLS);
+    return g_InstalledVersionKnown;
+}
+
 static LPCSTR HookStatus(DWORD result) {
     switch(result){
     case NTPWR_OK:return "Compatible";
@@ -650,6 +741,150 @@ static BOOL AgentRemove(SC_HANDLE manager) {
     }
     CloseServiceHandle(service);return TRUE;
 }
+static BOOL StartInstalledAgent(SC_HANDLE manager) {
+    SC_HANDLE service=OpenServiceA(manager,"NTPWRAgent",
+                                   SERVICE_START|SERVICE_QUERY_STATUS);
+    DWORD error;
+    BOOL ok=FALSE;
+    if(!service){Error("OpenService(NTPWRAgent)");return FALSE;}
+    if(!StartServiceA(service,0,NULL)) {
+        error=GetLastError();
+        if(error!=ERROR_SERVICE_ALREADY_RUNNING){
+            Error("StartService(NTPWRAgent)");
+            goto done;
+        }
+    }
+    if(!WaitAgentState(service,SERVICE_RUNNING)){
+        Fail("NTPWRAgent failed to start");
+        goto done;
+    }
+    ok=TRUE;
+done:
+    CloseServiceHandle(service);
+    return ok;
+}
+static BOOL StopInstalledAgent(SC_HANDLE manager) {
+    SC_HANDLE service=OpenServiceA(manager,"NTPWRAgent",
+                                  SERVICE_STOP|SERVICE_QUERY_STATUS);
+    BOOL ok;
+    if(!service){Error("OpenService(NTPWRAgent)");return FALSE;}
+    ok=StopAgent(service);
+    CloseServiceHandle(service);
+    return ok;
+}
+static BOOL StartInstalledServices(SC_HANDLE manager) {
+    if(!Start(manager))return FALSE;
+    if(!HookArm())return FALSE;
+    return StartInstalledAgent(manager);
+}
+static BOOL UpgradeFull(SC_HANDLE manager) {
+    char srcSys[MAX_PATH],dstSys[MAX_PATH],srcExe[MAX_PATH],dstExe[MAX_PATH];
+    char backupSys[MAX_PATH],backupExe[MAX_PATH];
+    DWORD oldMs,oldLs,sourceMs,sourceLs,n;
+    BOOL found=FALSE,running=FALSE,stopped=FALSE;
+    BOOL sysBackup=FALSE,exeBackup=FALSE,filesChanged=FALSE;
+    BOOL newDriverStarted=FALSE,restored=TRUE;
+    SC_HANDLE conflict;
+    conflict=OpenServiceA(manager,"QEMUPWR",SERVICE_QUERY_STATUS);
+    if(conflict){CloseServiceHandle(conflict);Fail("Remove QEMUPWR before upgrading NTPWR");return FALSE;}
+    if(!ServiceState(manager,&found,&running)||!found){
+        Fail("NTPWR is not installed");return FALSE;
+    }
+    if(!InstalledVersion(&oldMs,&oldLs)){
+        Fail("Installed driver version unavailable or inconsistent");return FALSE;
+    }
+    if(VersionCompare(oldMs,oldLs)>=0){
+        Fail(VersionCompare(oldMs,oldLs)==0?
+             "NTPWR already up to date":"A newer NTPWR version is installed");
+        return FALSE;
+    }
+    if(!Paths(srcSys,dstSys)){Fail("Driver path unavailable");return FALSE;}
+    n=GetModuleFileNameA(NULL,srcExe,MAX_PATH);
+    if(!n||n>=MAX_PATH){Fail("Executable path unavailable");return FALSE;}
+    n=GetSystemDirectoryA(dstExe,MAX_PATH);
+    if(!n||n>=MAX_PATH||!Append(dstExe,MAX_PATH,"\\NTPWR.EXE")){
+        Fail("Agent path unavailable");return FALSE;
+    }
+    if(Equals(srcExe,dstExe)||Equals(srcSys,dstSys)){
+        Fail("Run the upgrade from a separate directory");return FALSE;
+    }
+    if(!ReadVersion(srcSys,3UL,&sourceMs,&sourceLs)||
+       sourceMs!=CurrentVersionMS()||sourceLs!=CurrentVersionLS()){
+        Fail("NTPWR executable and driver versions differ");return FALSE;
+    }
+    backupSys[0]=0; backupExe[0]=0;
+    if(!Append(backupSys,MAX_PATH,dstSys)||
+       !Append(backupSys,MAX_PATH,".BAK")||
+       !Append(backupExe,MAX_PATH,dstExe)||
+       !Append(backupExe,MAX_PATH,".BAK")){
+        Fail("Backup path unavailable");return FALSE;
+    }
+    if(GetFileAttributesA(backupSys)!=INVALID_FILE_ATTRIBUTES||
+       GetFileAttributesA(backupExe)!=INVALID_FILE_ATTRIBUTES){
+        Fail("Existing upgrade backups must be resolved first");return FALSE;
+    }
+    if(!StopInstalledAgent(manager))return FALSE;
+    if(!NtpwrRemapAction("VERIFY")){
+        Fail("Winlogon patch restoration not verified");
+        StartInstalledAgent(manager);
+        return FALSE;
+    }
+    if(running && !HookDisarm()){
+        StartInstalledAgent(manager);
+        return FALSE;
+    }
+    if(!Stop(manager)){
+        if(running)StartInstalledServices(manager);
+        return FALSE;
+    }
+    stopped=TRUE;
+    if(!CopyWritable(dstSys,backupSys)){
+        DeleteWritable(backupSys);
+        goto rollback;
+    }
+    sysBackup=TRUE;
+    if(!CopyWritable(dstExe,backupExe)){
+        DeleteWritable(backupExe);
+        goto rollback;
+    }
+    exeBackup=TRUE;
+    filesChanged=TRUE;
+    if(!CopyWritable(srcSys,dstSys)||!CopyWritable(srcExe,dstExe))
+        goto rollback;
+    if(!Start(manager))goto rollback;
+    newDriverStarted=TRUE;
+    if(!HookArm()||!StartInstalledAgent(manager))goto rollback;
+    if(!DeleteWritable(backupSys)||!DeleteWritable(backupExe))
+        Print("Warning: upgrade backup cleanup pending.\r\n");
+    Print("NTPWR upgraded.\r\n");
+    return TRUE;
+rollback:
+    if(newDriverStarted){
+        if(!StopInstalledAgent(manager)||!HookDisarm()||!Stop(manager)){
+            Fail("Upgrade rollback failed; backup files retained");
+            return FALSE;
+        }
+    }
+    if(stopped){
+        if(filesChanged){
+            restored=CopyWritable(backupSys,dstSys);
+            if(!CopyWritable(backupExe,dstExe))restored=FALSE;
+        }
+        if(!restored){
+            Fail("Upgrade rollback failed; backup files retained");
+            return FALSE;
+        }
+        if(sysBackup && !DeleteWritable(backupSys))
+            Print("Warning: driver backup cleanup pending.\r\n");
+        if(exeBackup && !DeleteWritable(backupExe))
+            Print("Warning: agent backup cleanup pending.\r\n");
+        if(!StartInstalledServices(manager)){
+            Fail("Previous NTPWR installation could not be restarted");
+            return FALSE;
+        }
+    }
+    return FALSE;
+}
 static BOOL EnableAutostart(SC_HANDLE manager) {
     HANDLE key=NULL;SC_HANDLE service;DWORD value=1,err;
     err=RegCreateKeyExA(HKEY_LOCAL_MACHINE,
@@ -772,7 +1007,11 @@ static void PrintProbe(const PROBE *p) {
 static BOOL Run(LPCSTR action) {
     SC_HANDLE m=Manager();BOOL ok=FALSE;
     if(!m)return FALSE;
-    if(Equals(action,"INSTALL")) {ok=InstallFull(m);}
+    if(Equals(action,"INSTALL")) {
+        BOOL found=FALSE,running=FALSE;
+        if(ServiceState(m,&found,&running))
+            ok=found?UpgradeFull(m):InstallFull(m);
+    }else if(Equals(action,"UPGRADE"))ok=UpgradeFull(m);
     else if(Equals(action,"START"))ok=Start(m);
     else if(Equals(action,"STOP"))ok=Stop(m);
     else if(Equals(action,"REMOVE"))ok=RemoveFull(m);
@@ -856,12 +1095,29 @@ static const void *InfoTemplate(void){
 }
 static void Text(HWND wnd,int id,LPCSTR val){SetDlgItemTextA(wnd,id,val);}
 static void UpdateMain(HWND wnd){
-    Text(wnd,IDC_DRIVER,g_probe.installed?(g_probe.running?"Running":"Installed (stopped)"):"Not installed");
+    char driver[100],version[100];
+    LPCSTR state=g_probe.running?"Running":"Stopped";
+    driver[0]=0;
+    if(!g_probe.installed) Append(driver,sizeof(driver),"Not installed");
+    else if(!g_InstalledVersionKnown){
+        Append(driver,sizeof(driver),state);
+        Append(driver,sizeof(driver)," (version unknown)");
+    }else{
+        VersionText(version,g_InstalledVersionMS,g_InstalledVersionLS);
+        Append(driver,sizeof(driver),state);
+        Append(driver,sizeof(driver)," (");
+        Append(driver,sizeof(driver),version);
+        Append(driver,sizeof(driver),")");
+    }
+    Text(wnd,IDC_DRIVER,driver);
     Text(wnd,IDC_ACPI,AcpiState(&g_probe));
     Text(wnd,IDC_APM,"Not implemented");
     Text(wnd,IDC_METHOD,g_probe.backend?"ACPI S5":"None");
     Text(wnd,IDC_POWER,g_probe.hook_active?"Enabled":g_probe.backend?"Disabled":"Unavailable");
-    EnableWindow(GetDlgItem(wnd,IDC_INSTALL),!g_probe.installed);
+    SetDlgItemTextA(wnd,IDC_INSTALL,g_probe.installed?"Upgrade":"Install");
+    EnableWindow(GetDlgItem(wnd,IDC_INSTALL),!g_probe.installed||
+        (g_InstalledVersionKnown&&
+         VersionCompare(g_InstalledVersionMS,g_InstalledVersionLS)<0));
     EnableWindow(GetDlgItem(wnd,IDC_REMOVE),g_probe.installed);
 }
 static void MakeVersion(char *text){
@@ -903,6 +1159,7 @@ static BOOL Refresh(void){
     SC_HANDLE m=Manager();BOOL ok;
     if(!m)return FALSE;
     ok=Scan(m,&g_probe);
+    RefreshInstalledVersion(g_probe.installed);
     CloseServiceHandle(m);
     return ok;
 }
@@ -930,8 +1187,12 @@ static LONG WINAPI MainDialog(HWND wnd,UINT msg,WPARAM w,LPARAM l){
             SC_HANDLE m;BOOL ok=FALSE;
             ResetFailure();
             m=Manager();
-            if(m){ok=InstallFull(m);CloseServiceHandle(m);}
-            if(!ok)ShowFailure(wnd,"Installation failed: ");
+            if(m){
+                ok=g_probe.installed?UpgradeFull(m):InstallFull(m);
+                CloseServiceHandle(m);
+            }
+            if(!ok)ShowFailure(wnd,g_probe.installed?
+                               "Upgrade failed: ":"Installation failed: ");
             Refresh();UpdateMain(wnd);return TRUE;
         }
         if((WORD)w==IDC_REMOVE){
@@ -968,10 +1229,10 @@ void __cdecl Entry(void){
         ok=ConfigureSerial(arg);
         CliExit(ok?0:1);
     }
-    if(!Equals(arg,"INSTALL")&&!Equals(arg,"START")&&!Equals(arg,"STOP")&&
+    if(!Equals(arg,"INSTALL")&&!Equals(arg,"UPGRADE")&&!Equals(arg,"START")&&!Equals(arg,"STOP")&&
        !Equals(arg,"REMOVE")&&!Equals(arg,"STATUS")&&!Equals(arg,"SCAN")&&
        !Equals(arg,"INFO")&&!Equals(arg,"RESULT")){
-        Print("Usage: NTPWR [SCAN|INFO|WINLOGON|INSTALL|START|STATUS|STOP|REMOVE|SERIAL COM1-COM4|SERIAL OFF]\r\n");
+        Print("Usage: NTPWR [SCAN|INFO|WINLOGON|INSTALL|UPGRADE|START|STATUS|STOP|REMOVE|SERIAL COM1-COM4|SERIAL OFF]\r\n");
         CliExit(2);
     }
     ResetFailure();

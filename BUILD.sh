@@ -206,6 +206,8 @@ EXPORTS
     SetFileAttributesA
     Sleep
     GetModuleHandleA
+    LoadLibraryA
+    FreeLibrary
     GetVersionExA
     CloseHandle
     CreateFileA
@@ -306,7 +308,7 @@ done
 user_imports=(GetStdHandle:4 WriteFile:20 FreeConsole:0 GetLastError:0 ExitProcess:4
   GetCommandLineA:0 GetModuleFileNameA:12 GetSystemDirectoryA:8
   CopyFileA:12 DeleteFileA:4 GetFileAttributesA:4 SetFileAttributesA:8
-  Sleep:4 GetModuleHandleA:4 GetVersionExA:4
+  Sleep:4 GetModuleHandleA:4 LoadLibraryA:4 FreeLibrary:4 GetVersionExA:4
   CloseHandle:4 CreateFileA:28 DeviceIoControl:32 GetCurrentProcess:0
   GetProcAddress:8 GetProcessHeap:0 HeapAlloc:12 HeapFree:12 OpenProcess:12
   DuplicateHandle:28
