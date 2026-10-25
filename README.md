@@ -11,7 +11,7 @@ The ACPI S5 backend uses firmware-provided FADT registers and AML without QEMU-s
 - **Other NT 3.51/4.0 builds:** potentially compatible when both kernel and Winlogon shutdown checks pass; not validated.
 - **Other NT versions:** not supported.
 
-The kernel hook validates its shutdown call site, HAL import and IAT dynamically. Winlogon patching requires a matching shutdown instruction sequence at a recognized image-relative location; other layouts are rejected. Structural matches on untested NT builds are not guaranteed compatible. The ACPI power-off path has been tested with QEMU PIIX4 firmware; compatibility with other ACPI firmware is not established. Unsupported configurations retain the original shutdown behavior.
+The kernel hook validates its shutdown call site and IAT, checking the named HAL import or the loaded HAL export when import names are unavailable. Winlogon patching requires a matching shutdown instruction sequence at a recognized image-relative location; other layouts are rejected. Structural matches on untested NT builds are not guaranteed compatible. The ACPI power-off path has been tested with QEMU PIIX4 firmware; compatibility with other ACPI firmware is not established. Unsupported configurations retain the original shutdown behavior.
 
 ## Components
 
