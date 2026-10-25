@@ -117,7 +117,7 @@ typedef struct PROBE {
     DWORD stage, init, load, ns, eval, count, a, b;
     DWORD error;
     DWORD backend;
-    BOOL hook_active,hook_checked;
+    BOOL hook_active,hook_checked,hook_verified;
     DWORD hook_result;
 } PROBE;
 
@@ -464,8 +464,8 @@ static BOOL QueryHook(PROBE *p) {
     if(report.Signature!=NTPWR_SIGNATURE || report.Size!=sizeof(report))return FALSE;
     p->backend=report.AcpiReady;
     p->hook_active=(report.Flags & NTPWR_FLAG_ARMED)!=0;
-    p->hook_result=report.Result==NTPWR_OK &&
-        !(report.Flags&NTPWR_FLAG_KNOWN)?NTPWR_NOT_VERIFIED:report.Result;
+    p->hook_result=report.Result;
+    p->hook_verified=(report.Flags&NTPWR_FLAG_KNOWN)!=0;
     p->hook_checked=TRUE;
     return TRUE;
 }
@@ -484,9 +484,8 @@ static BOOL HookArm(void) {
             }
             return FALSE;
         }
-        if(report.Result!=NTPWR_OK || !(report.Flags&NTPWR_FLAG_KNOWN)){
-            Fail(report.Result!=NTPWR_OK?HookStatus(report.Result):
-                 "Kernel profile not verified");
+        if(report.Result!=NTPWR_OK){
+            Fail(HookStatus(report.Result));
             return FALSE;
         }
     }
@@ -663,7 +662,7 @@ static BOOL Scan(SC_HANDLE m,PROBE *p) {
     BOOL was_installed=FALSE,was_running=FALSE;
     BOOL temporary=FALSE,started=FALSE,ok=FALSE;
     p->scanned=FALSE;p->error=0;p->backend=0;p->hook_active=FALSE;
-    p->hook_checked=FALSE;p->hook_result=0;
+    p->hook_checked=FALSE;p->hook_verified=FALSE;p->hook_result=0;
     if(!ServiceState(m,&was_installed,&was_running))return FALSE;
     p->installed=was_installed;p->running=was_running;
     if(!was_installed){
@@ -704,7 +703,10 @@ static void PrintProbe(const PROBE *p) {
     Print("NTPWR: APM not implemented (not probed)\r\n");
     Print("NTPWR: ACPI S5 ");Print(p->backend?"registers mapped\r\n":"not ready\r\n");
     if(p->hook_checked){
-        Print("NTPWR: Hook: ");Print(HookStatus(p->hook_result));Print("\r\n");
+        Print("NTPWR: Hook: ");
+        Print(p->hook_result==NTPWR_OK&&!p->hook_verified?
+              "Compatible (unverified)":HookStatus(p->hook_result));
+        Print("\r\n");
     }
 }
 static BOOL Run(LPCSTR action) {
@@ -830,7 +832,10 @@ static void UpdateInfo(HWND wnd){
     if(g_probe.scanned){HexToText(g_probe.ns,s);Text(wnd,IDC_NAMESPACE,s);}
     else Text(wnd,IDC_NAMESPACE,"Unavailable");
     Text(wnd,IDC_BACKEND,g_probe.backend?"ACPI S5 registers mapped":"No supported backend");
-    Text(wnd,IDC_HOOK,!g_probe.hook_checked?"Not scanned":g_probe.hook_active?"Active":HookStatus(g_probe.hook_result));
+    Text(wnd,IDC_HOOK,!g_probe.hook_checked?"Not scanned":
+         g_probe.hook_active?"Active":
+         g_probe.hook_result==NTPWR_OK&&!g_probe.hook_verified?
+         "Compatible (unverified)":HookStatus(g_probe.hook_result));
 }
 static BOOL Refresh(void){
     SC_HANDLE m=Manager();BOOL ok;
