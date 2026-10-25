@@ -191,7 +191,6 @@ static DWORD g_pos;
 static HANDLE g_Output = (HANDLE)-1;
 static HANDLE g_FallbackLog = (HANDLE)-1;
 static BOOL g_CliMode = FALSE;
-static BOOL g_ScanQuiet = FALSE;
 static char g_LastFailure[180];
 static DWORD g_LastErrorCode;
 static BOOL g_InstalledVersionKnown = FALSE;
@@ -235,6 +234,7 @@ static void SetFailure(LPCSTR reason,DWORD code) {
 }
 static void Fail(LPCSTR reason) {
     SetFailure(reason,0);
+    if(g_CliMode)Print("Error: ");
     Print(reason);
     Print("\r\n");
 }
@@ -256,6 +256,7 @@ static void PrintDecimal(DWORD x) { char s[12];DecimalToText(x,s);Print(s); }
 static void Error(LPCSTR where) {
     DWORD code=GetLastError();
     SetFailure(where,code);
+    if(g_CliMode)Print("Error: ");
     Print(where);Print(" failed: ");PrintHex(code);Print("\r\n");
 }
 static void ShowFailure(HWND wnd,LPCSTR action) {
@@ -472,12 +473,12 @@ static BOOL Install(SC_HANDLE m) {
         SERVICE_KERNEL_DRIVER,SERVICE_DEMAND_START,SERVICE_ERROR_NORMAL,
         "\\SystemRoot\\System32\\Drivers\\NTPWR.SYS",NULL,NULL,NULL,NULL,NULL);
     if(!s){Error("CreateService");DeleteWritable(dst);return FALSE;}
-    CloseServiceHandle(s);if(!g_ScanQuiet)Print("Driver installed.\r\n");return TRUE;
+    CloseServiceHandle(s);return TRUE;
 }
 static BOOL Start(SC_HANDLE m) {
     SC_HANDLE s=Service(m);BOOL ok=FALSE;
     if(!s){Error("OpenService");return FALSE;}
-    if(StartServiceA(s,0,NULL)){if(!g_ScanQuiet)Print("Driver loaded.\r\n");ok=TRUE;}
+    if(StartServiceA(s,0,NULL)){ok=TRUE;}
     else if(GetLastError()==ERROR_SERVICE_ALREADY_RUNNING){ok=TRUE;}
     else Error("StartService");
     CloseServiceHandle(s);return ok;
@@ -504,7 +505,6 @@ static BOOL Stop(SC_HANDLE m) {
     ok=TRUE;
 done:
     CloseServiceHandle(s);
-    if(ok&&!g_ScanQuiet)Print("Driver stopped.\r\n");
     return ok;
 }
 static BOOL Remove(SC_HANDLE m) {
@@ -517,16 +517,15 @@ static BOOL Remove(SC_HANDLE m) {
             Error("ControlService");goto done;
         }
         if(!WaitStopped(s)){Fail("Driver did not stop");goto done;}
-        if(!g_ScanQuiet)Print("Driver stopped.\r\n");
     }
     if(!DeleteService(s)){Error("DeleteService");goto done;}
-    ok=TRUE;if(!g_ScanQuiet)Print("Driver service removed.\r\n");
+    ok=TRUE;
 done:
     CloseServiceHandle(s);
     if(ok&&Paths(src,dst)){
         if(!DeleteWritable(dst)){
             Print("Warning: unable to delete driver file: ");PrintHex(GetLastError());Print("\r\n");
-        }else if(!g_ScanQuiet)Print("Driver file removed.\r\n");
+        }
     }
     return ok;
 }
@@ -638,12 +637,9 @@ static BOOL HookArm(void) {
         if(!report.AcpiReady){
             PROBE probe;
             if(ReadProbe(&probe) && probe.stage==1 && probe.init==6UL)
-                Fail("ACPI tables not found; APM not implemented");
+                Fail("No supported power-off backend (ACPI tables unavailable; APM not implemented)");
             else
-                Fail("ACPI S5 unavailable; APM not implemented");
-            if(report.Result!=NTPWR_OK){
-                Print("NTPWR: ");Print(HookStatus(report.Result));Print("\r\n");
-            }
+                Fail("No supported power-off backend (ACPI S5 unavailable; APM not implemented)");
             return FALSE;
         }
         if(report.Result!=NTPWR_OK){
@@ -881,7 +877,7 @@ static BOOL UpgradeFull(SC_HANDLE manager) {
     if(!HookArm()||!StartInstalledAgent(manager))goto rollback;
     if(!DeleteWritable(backupSys)||!DeleteWritable(backupExe))
         Print("Warning: upgrade backup cleanup pending.\r\n");
-    Print("NTPWR upgraded.\r\n");
+    Print("Upgrade completed.\r\n");
     return TRUE;
 rollback:
     if(newDriverStarted){
@@ -945,6 +941,7 @@ static BOOL InstallFull(SC_HANDLE manager) {
         if(!AgentRemove(manager) || !HookDisarm())return FALSE;
         goto rollback;
     }
+    Print("Installation completed.\r\n");
     return TRUE;
 rollback:
     ok=Remove(manager);
@@ -958,7 +955,7 @@ static BOOL RemoveFull(SC_HANDLE manager) {
         return FALSE;
     }
     if(!ServiceState(manager,&found,&running))return FALSE;
-    if(!found){Print("NTPWR: not installed.\r\n");return TRUE;}
+    if(!found){Print("Not installed.\r\n");return TRUE;}
     if(running && !HookDisarm())return FALSE;
     if(!Remove(manager))return FALSE;
     {
@@ -966,6 +963,7 @@ static BOOL RemoveFull(SC_HANDLE manager) {
         if(n && n<MAX_PATH && Append(dest,MAX_PATH,"\\NTPWR.EXE"))
             if(!DeleteWritable(dest))Print("Warning: NTPWR.EXE cleanup pending.\r\n");
     }
+    Print("Uninstallation completed.\r\n");
     return TRUE;
 }
 static BOOL Scan(SC_HANDLE m,PROBE *p) {
@@ -975,9 +973,8 @@ static BOOL Scan(SC_HANDLE m,PROBE *p) {
     p->hook_checked=FALSE;p->hook_verified=FALSE;p->hook_result=0;
     if(!ServiceState(m,&was_installed,&was_running))return FALSE;
     p->installed=was_installed;p->running=was_running;
-    g_ScanQuiet=TRUE;
     if(!was_installed){
-        if(!Install(m)){g_ScanQuiet=FALSE;return FALSE;}
+        if(!Install(m))return FALSE;
         temporary=TRUE;
     }
     if(!was_running){
@@ -986,7 +983,7 @@ static BOOL Scan(SC_HANDLE m,PROBE *p) {
     }
     ok=ReadProbe(p);
     if(ok)QueryHook(p);
-    if(!ok)Print("Probe results unavailable.\r\n");
+    if(!ok)Fail("ACPI probe results unavailable");
 cleanup:
     if(temporary){
         if(!Remove(m))ok=FALSE;
@@ -994,46 +991,47 @@ cleanup:
         if(!Stop(m))ok=FALSE;
     }
     p->installed=was_installed;p->running=was_running;
-    g_ScanQuiet=FALSE;
     return ok;
 }
-static void PrintProbe(const PROBE *p) {
-    Print("NTPWR: ACPI ");
-    if(!p->scanned)Print("not scanned\r\n");
-    else if(p->stage==1 && p->init==6UL)Print("not detected (ACPI tables unavailable)\r\n");
-    else if(p->stage==4){
-        Print("detected; AML ready; S5 package=");PrintDecimal(p->count);
+static void PrintProbe(const PROBE *p,BOOL detailed) {
+    if(p->hook_checked) {
+        Print("Kernel: ");
+        Print(p->hook_result==NTPWR_OK&&!p->hook_verified?
+              "Compatible (unverified)":HookStatus(p->hook_result));
+        Print("\r\n");
+    }else Print("Kernel: Not checked\r\n");
+    if(p->scanned&&p->stage==4&&p->backend)
+        Print("ACPI S5: Ready\r\n");
+    else if(p->scanned&&p->stage==1&&p->init==6UL)
+        Print("Warning: No supported power-off backend (ACPI tables unavailable; APM not implemented)\r\n");
+    else if(p->scanned)
+        Print("Warning: No supported power-off backend (ACPI S5 unavailable; APM not implemented)\r\n");
+    else
+        Print("ACPI S5: Not scanned\r\n");
+    if(!detailed)return;
+    if(p->scanned&&p->stage==4){
+        Print("S5 package=");PrintDecimal(p->count);
         Print(" slp_typa=");PrintDecimal(p->a);
         Print(" slp_typb=");PrintDecimal(p->b);Print("\r\n");
-    }else{
-        Print("probe incomplete; stage=");PrintDecimal(p->stage);
+    }else if(p->scanned){
+        Print("ACPI probe: stage=");PrintDecimal(p->stage);
         Print(" init=");PrintHex(p->init);
         Print(" load=");PrintHex(p->load);
         Print(" namespace=");PrintHex(p->ns);
         Print(" eval=");PrintHex(p->eval);Print("\r\n");
     }
-    Print("NTPWR: APM not implemented\r\n");
-    if(p->backend)Print("NTPWR: ACPI S5 ready\r\n");
-    else if(p->scanned)
-        Print("NTPWR: ERROR: ACPI S5 unavailable; power-off disabled\r\n");
     if(p->hook_checked){
-        Print("NTPWR: Hook: ");
-        Print(p->hook_result==NTPWR_OK&&!p->hook_verified?
-              "Compatible (unverified)":HookStatus(p->hook_result));
-        Print("\r\n");
-        if(p->hook_result==NTPWR_NOT_VERIFIED||
-           (p->hook_result==NTPWR_OK&&!p->hook_verified)){
-            Print("NTPWR: Kernel timestamp=");PrintHex(p->kernel_timestamp);
-            Print(" checksum=");PrintHex(p->kernel_checksum);
-            Print(" size=");PrintHex(p->kernel_image_size);Print("\r\n");
-            Print("NTPWR: Shutdown branch=");PrintHex(p->branch_address);
-            Print(" matches=");PrintDecimal(p->branch_matches);
-            Print(" IAT=");PrintHex(p->iat_address);Print("\r\n");
-            Print("NTPWR: HAL target=");PrintHex(p->hal_target);
-            Print(" import=");PrintHex(p->hal_import);Print("\r\n");
-        }
+        Print("Kernel timestamp=");PrintHex(p->kernel_timestamp);
+        Print(" checksum=");PrintHex(p->kernel_checksum);
+        Print(" size=");PrintHex(p->kernel_image_size);Print("\r\n");
+        Print("Shutdown branch=");PrintHex(p->branch_address);
+        Print(" matches=");PrintDecimal(p->branch_matches);
+        Print(" IAT=");PrintHex(p->iat_address);Print("\r\n");
+        Print("HAL target=");PrintHex(p->hal_target);
+        Print(" import=");PrintHex(p->hal_import);Print("\r\n");
     }
 }
+
 static BOOL Run(LPCSTR action) {
     SC_HANDLE m=Manager();BOOL ok=FALSE;
     if(!m)return FALSE;
@@ -1046,23 +1044,25 @@ static BOOL Run(LPCSTR action) {
     else if(Equals(action,"STOP"))ok=Stop(m);
     else if(Equals(action,"REMOVE"))ok=RemoveFull(m);
     else if(Equals(action,"SCAN")){
-        ok=Scan(m,&g_probe);PrintProbe(&g_probe);
-        if(ok&&!g_probe.backend)ok=FALSE;
+        ok=Scan(m,&g_probe);PrintProbe(&g_probe,FALSE);
+        if(ok&&(!g_probe.backend||!g_probe.hook_checked||
+                g_probe.hook_result!=NTPWR_OK))ok=FALSE;
     }else if(Equals(action,"INFO")){
         BOOL found=FALSE,running=FALSE;
         if(ServiceState(m,&found,&running)&&found&&running){
             g_probe.installed=found;g_probe.running=running;
             ok=ReadProbe(&g_probe);
             if(ok)QueryHook(&g_probe);
-            PrintProbe(&g_probe);
+            PrintProbe(&g_probe,TRUE);
         }else{
-            ok=Scan(m,&g_probe);PrintProbe(&g_probe);
+            ok=Scan(m,&g_probe);PrintProbe(&g_probe,TRUE);
         }
-        if(ok&&!g_probe.backend)ok=FALSE;
+        if(ok&&(!g_probe.backend||!g_probe.hook_checked||
+                g_probe.hook_result!=NTPWR_OK))ok=FALSE;
     }else if(Equals(action,"STATUS")){
         BOOL found=FALSE,running=FALSE;
         ok=ServiceState(m,&found,&running);
-        if(ok){Print("NTPWR: ");Print(!found?"Not installed\r\n":running?"Running\r\n":"Stopped\r\n");}
+        if(ok)Print(!found?"Not installed\r\n":running?"Running\r\n":"Stopped\r\n");
     }
     CloseServiceHandle(m);return ok;
 }
@@ -1307,7 +1307,7 @@ void __cdecl Entry(void){
        !Equals(arg,"START")&&!Equals(arg,"STOP")&&
        !Equals(arg,"REMOVE")&&!Equals(arg,"STATUS")&&
        !Equals(arg,"SCAN")&&!Equals(arg,"INFO")){
-        Print("Unknown command. Use NTPWR HELP.\r\n");
+        Print("Error: Unknown command. Use NTPWR HELP.\r\n");
         CliExit(2);
     }
     ResetFailure();

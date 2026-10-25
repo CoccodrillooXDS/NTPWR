@@ -775,7 +775,7 @@ BOOL NtpwrRemapAction(LPCSTR Action)
     if (g_VisibleStatus)
         g_Stdout = GetStdHandle((DWORD)-11);
 
-    Out("NTPWR - Winlogon remap\r\n");
+    Out("Winlogon remap\r\n");
     Out("Action: ");
     Out(g_Action == ACTION_PATCH ? "PATCH" :
         (g_Action == ACTION_RESTORE ? "RESTORE" : "STATUS"));
