@@ -43,6 +43,7 @@ def check(path):
     assert (product_ms, product_ls) == expected, f'{path}: PRODUCTVERSION mismatch'
     assert f'{major}.{minor}.{patch}'.encode('utf-16le') in resource_data, f'{path}: missing version string'
     assert Path(path).name.upper().encode('utf-16le') in resource_data, f'{path}: wrong original filename'
+    assert 'Copyright (c) 2026 CoccodrillooXDS'.encode('utf-16le') in resource_data, f'{path}: missing copyright'
     print(f'PASS {Path(path).name}: PE32 i386, OS 3.51, subsystem={sub}, NTPWR {major}.{minor}.{patch}, size={len(data)}')
 
 for filename in sys.argv[1:]: check(filename)

@@ -51,6 +51,7 @@ def make_resource(parts, kind):
     texts = {
         'FileDescription': 'NTPWR Management Utility' if exe else 'NTPWR Kernel Driver',
         'FileVersion': file_version,
+        'LegalCopyright': 'Copyright (c) 2026 CoccodrillooXDS',
         'OriginalFilename': 'NTPWR.EXE' if exe else 'NTPWR.SYS',
         'ProductName': 'NTPWR',
         'ProductVersion': product_version,
