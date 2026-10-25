@@ -187,6 +187,7 @@ EXPORTS
     WRITE_PORT_USHORT
     WRITE_PORT_ULONG
     HalGetBusDataByOffset
+    HalSetBusDataByOffset
 DEF
 cat > "$B/KERNEL32.DEF" <<'DEF'
 LIBRARY KERNEL32.DLL
@@ -282,7 +283,7 @@ done
 for import in READ_PORT_UCHAR:4 READ_PORT_USHORT:4 READ_PORT_ULONG:4 \
               WRITE_PORT_UCHAR:8 WRITE_PORT_USHORT:8 WRITE_PORT_ULONG:8 \
               KeQueryPerformanceCounter:4 KeStallExecutionProcessor:4 \
-              HalGetBusDataByOffset:24; do
+              HalGetBusDataByOffset:24 HalSetBusDataByOffset:24; do
     name="${import%:*}"; size="${import#*:}"
     aliases+=("/alternatename:__imp__${name}@${size}=__imp__${name}")
 done

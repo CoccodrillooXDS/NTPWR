@@ -104,6 +104,25 @@ void __cdecl NtpwrTraceAcpiEvent(const char *Event)
     PvLog("\r\n");
 }
 
+void __cdecl NtpwrTracePciWrite(ULONG Bus, ULONG Slot,
+                               ULONG Offset, ULONG Width,
+                               ULONG Value, ULONG Written)
+{
+    PvLog("NTPWR: PCI write bus=");
+    PvLogHex(Bus);
+    PvLog(" slot=");
+    PvLogHex(Slot);
+    PvLog(" offset=");
+    PvLogHex(Offset);
+    PvLog(" width=");
+    PvLogHex(Width);
+    PvLog(" value=");
+    PvLogHex(Value);
+    PvLog(" written=");
+    PvLogHex(Written);
+    PvLog("\r\n");
+}
+
 static BOOLEAN PvMapped(PUCHAR P, ULONG Count)
 {
     ULONG I;

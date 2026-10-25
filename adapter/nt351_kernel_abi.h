@@ -99,5 +99,8 @@ __declspec(dllimport) void __stdcall ExQueueWorkItem(
 __declspec(dllimport) NT351_U32 __stdcall HalGetBusDataByOffset(
     NT351_U32 BusDataType, NT351_U32 BusNumber, NT351_U32 SlotNumber,
     void *Buffer, NT351_U32 Offset, NT351_U32 Length);
+__declspec(dllimport) NT351_U32 __stdcall HalSetBusDataByOffset(
+    NT351_U32 BusDataType, NT351_U32 BusNumber, NT351_U32 SlotNumber,
+    void *Buffer, NT351_U32 Offset, NT351_U32 Length);
 
 #endif
