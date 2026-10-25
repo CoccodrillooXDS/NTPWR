@@ -432,6 +432,7 @@ static BOOL CheckImage(HANDLE Process, DWORD Base, DWORD PatchRva,
     }
 
     if (g_Action == ACTION_STATUS) {
+        if (!g_VisibleStatus && !IsOriginal) return TRUE;
         g_Succeeded = TRUE;
         Out("STATUS complete.\r\n");
         return TRUE;
