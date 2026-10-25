@@ -100,6 +100,7 @@ EXPORTS
     DialogBoxIndirectParamA
     EndDialog
     SetDlgItemTextA
+    SendDlgItemMessageA
     GetDlgItem
     EnableWindow
     MessageBoxA
@@ -117,7 +118,7 @@ user_imports=(GetStdHandle:4 WriteFile:20 FreeConsole:0 GetLastError:0 ExitProce
   GetProcAddress:8 GetProcessHeap:0 HeapAlloc:12 HeapFree:12 OpenProcess:12
   ReadProcessMemory:20 WriteProcessMemory:20 CreateEventA:16 ResetEvent:4
   SetEvent:4 WaitForSingleObject:8 SetLastError:4 lstrcmpiA:8 lstrlenA:4
-  DialogBoxIndirectParamA:20 EndDialog:8 SetDlgItemTextA:12 GetDlgItem:8 EnableWindow:8 MessageBoxA:16
+  DialogBoxIndirectParamA:20 EndDialog:8 SetDlgItemTextA:12 SendDlgItemMessageA:20 GetDlgItem:8 EnableWindow:8 MessageBoxA:16
   OpenSCManagerA:12 CreateServiceA:52
   OpenServiceA:12 StartServiceA:12 QueryServiceStatus:8 ControlService:12
   DeleteService:4 CloseServiceHandle:4 RegOpenKeyExA:20 RegQueryValueExA:24

@@ -78,6 +78,11 @@ typedef LONG (__stdcall *DLGPROC)(HWND, UINT, WPARAM, LPARAM);
 #define BS_PUSHBUTTON 0UL
 #define BS_DEFPUSHBUTTON 1UL
 #define BS_GROUPBOX 7UL
+#define CBS_DROPDOWNLIST 3UL
+#define WS_VSCROLL 0x00200000UL
+#define CB_ADDSTRING 0x0143UL
+#define CB_GETCURSEL 0x0147UL
+#define CB_SETCURSEL 0x014EUL
 #define SS_LEFT 0UL
 #define MB_OK 0UL
 #define MB_ICONERROR 0x10UL
@@ -102,6 +107,8 @@ typedef LONG (__stdcall *DLGPROC)(HWND, UINT, WPARAM, LPARAM);
 #define IDC_HOOK 307
 #define IDC_MODE 308
 #define IDC_NAMESPACE 309
+#define IDC_SERIAL_PORT 401
+#define IDC_SERIAL_APPLY 402
 #define VERSION_SIGNATURE 0xFEEF04BDUL
 #define VERSION_BUFFER_LIMIT 32768UL
 
@@ -171,6 +178,7 @@ extern BOOL NtpwrRemapAction(LPCSTR);
 IMPORT LONG WINAPI DialogBoxIndirectParamA(HANDLE, const void *, HWND, DLGPROC, LPARAM);
 IMPORT BOOL WINAPI EndDialog(HWND, LONG);
 IMPORT BOOL WINAPI SetDlgItemTextA(HWND, int, LPCSTR);
+IMPORT LONG WINAPI SendDlgItemMessageA(HWND,int,UINT,WPARAM,LPARAM);
 IMPORT HWND WINAPI GetDlgItem(HWND, int);
 IMPORT BOOL WINAPI EnableWindow(HWND, BOOL);
 IMPORT int WINAPI MessageBoxA(HWND, LPCSTR, LPCSTR, UINT);
@@ -187,6 +195,7 @@ static char g_LastFailure[180];
 static DWORD g_LastErrorCode;
 static BOOL g_InstalledVersionKnown = FALSE;
 static DWORD g_InstalledVersionMS, g_InstalledVersionLS;
+static DWORD g_SerialPort=0;
 
 
 static DWORD StringLength(LPCSTR s) { DWORD n=0; while(s[n]) ++n; return n; }
@@ -540,6 +549,16 @@ static BOOL ReadProbe(PROBE *p) {
         ReadDword(key,"S5TypeB",&p->b);
     RegCloseKey(key);return p->scanned;
 }
+static void ReadSerialPort(void) {
+    HANDLE key=NULL;
+    DWORD port=0;
+    g_SerialPort=0;
+    if(RegOpenKeyExA(HKEY_LOCAL_MACHINE,
+        "SYSTEM\\CurrentControlSet\\Services\\NTPWR",0,KEY_QUERY_VALUE,&key)!=0)
+        return;
+    if(ReadDword(key,"SerialPort",&port)&&port<=4UL)g_SerialPort=port;
+    RegCloseKey(key);
+}
 static BOOL KernelHook(DWORD action,NTPWR_REPORT *out) {
     HANDLE d=CreateFileA("\\\\.\\NTPWR",GENERIC_READ|GENERIC_WRITE,
         FILE_SHARE_READ|FILE_SHARE_WRITE,NULL,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,NULL);
@@ -552,39 +571,44 @@ static BOOL KernelHook(DWORD action,NTPWR_REPORT *out) {
     CloseHandle(d);
     return ok;
 }
-static BOOL ConfigureSerial(LPCSTR action) {
-    DWORD port, count = 0, result;
-    LPCSTR name;
-    HANDLE device, key = NULL;
+static BOOL ConfigureSerialPort(DWORD port) {
+    DWORD count=0, result;
+    HANDLE device,key=NULL;
     BOOL ok;
-    if (Equals(action,"SERIAL OFF")) {port=0;name="Off";}
-    else if (Equals(action,"SERIAL COM1")) {port=1;name="COM1";}
-    else if (Equals(action,"SERIAL COM2")) {port=2;name="COM2";}
-    else if (Equals(action,"SERIAL COM3")) {port=3;name="COM3";}
-    else if (Equals(action,"SERIAL COM4")) {port=4;name="COM4";}
-    else return FALSE;
+    static const LPCSTR names[5]={"Off","COM1","COM2","COM3","COM4"};
+    if(port>4UL)return FALSE;
     device=CreateFileA("\\\\.\\NTPWR",GENERIC_READ|GENERIC_WRITE,
                        FILE_SHARE_READ|FILE_SHARE_WRITE,NULL,OPEN_EXISTING,
                        FILE_ATTRIBUTE_NORMAL,NULL);
-    if (!device || device==(HANDLE)-1) {Error("Open NTPWR");return FALSE;}
+    if(!device||device==(HANDLE)-1){Error("Open NTPWR");return FALSE;}
     ok=DeviceIoControl(device,NTPWR_IOCTL_SERIAL_DEBUG,
                        &port,sizeof(port),NULL,0,&count,NULL);
-    if (!ok) Error("Serial debug");
+    if(!ok)Error("Serial debug");
     CloseHandle(device);
-    if (!ok) return FALSE;
+    if(!ok)return FALSE;
     result=RegOpenKeyExA(HKEY_LOCAL_MACHINE,
         "SYSTEM\\CurrentControlSet\\Services\\NTPWR",0,KEY_SET_VALUE,&key);
-    if (result==0) {
+    if(result==0){
         result=RegSetValueExA(key,"SerialPort",0,REG_DWORD,
                              (const BYTE *)&port,sizeof(port));
         RegCloseKey(key);
     }
-    if (result!=0) {
+    if(result!=0){
+        SetFailure("Save serial setting",result);
         Print("Serial setting not saved: ");PrintHex(result);Print("\r\n");
         return FALSE;
     }
-    Print("Serial debug: ");Print(name);Print(" (saved)\r\n");
+    g_SerialPort=port;
+    Print("Serial debug: ");Print(names[port]);Print(" (saved)\r\n");
     return TRUE;
+}
+static BOOL ConfigureSerial(LPCSTR action) {
+    if(Equals(action,"SERIAL OFF"))return ConfigureSerialPort(0);
+    if(Equals(action,"SERIAL COM1"))return ConfigureSerialPort(1);
+    if(Equals(action,"SERIAL COM2"))return ConfigureSerialPort(2);
+    if(Equals(action,"SERIAL COM3"))return ConfigureSerialPort(3);
+    if(Equals(action,"SERIAL COM4"))return ConfigureSerialPort(4);
+    return FALSE;
 }
 
 static BOOL QueryHook(PROBE *p) {
@@ -992,7 +1016,8 @@ static void PrintProbe(const PROBE *p) {
         Print(p->hook_result==NTPWR_OK&&!p->hook_verified?
               "Compatible (unverified)":HookStatus(p->hook_result));
         Print("\r\n");
-        if(p->hook_result==NTPWR_NOT_VERIFIED){
+        if(p->hook_result==NTPWR_NOT_VERIFIED||
+           (p->hook_result==NTPWR_OK&&!p->hook_verified)){
             Print("NTPWR: Kernel timestamp=");PrintHex(p->kernel_timestamp);
             Print(" checksum=");PrintHex(p->kernel_checksum);
             Print(" size=");PrintHex(p->kernel_image_size);Print("\r\n");
@@ -1048,7 +1073,7 @@ static void Begin(BYTE *buf,WORD count,WORD width,WORD height,LPCSTR name){
     D(0);W(count);W(0);W(0);W(width);W(height);W(0);W(0);T(name);
 }
 static const void *MainTemplate(void){
-    Begin((BYTE *)g_main_storage,15,274,164,
+    Begin((BYTE *)g_main_storage,19,274,220,
           "NT Power Management Driver - " NTPWR_VERSION_DISPLAY);
     Control(BS_GROUPBOX,8,7,258,120,20,0x80,"Status");
     Control(SS_LEFT,17,25,69,12,21,0x82,"Driver:");
@@ -1061,10 +1086,16 @@ static const void *MainTemplate(void){
     Control(SS_LEFT,91,82,165,12,IDC_METHOD,0x82,"");
     Control(SS_LEFT,17,101,69,12,25,0x82,"Power-off:");
     Control(SS_LEFT,91,101,165,12,IDC_POWER,0x82,"");
-    Control(BS_PUSHBUTTON|WS_TABSTOP,8,138,58,17,IDC_INSTALL,0x80,"Install");
-    Control(BS_PUSHBUTTON|WS_TABSTOP,74,138,65,17,IDC_REMOVE,0x80,"Uninstall");
-    Control(BS_PUSHBUTTON|WS_TABSTOP,147,138,56,17,IDC_INFO,0x80,"Info...");
-    Control(BS_DEFPUSHBUTTON|WS_TABSTOP,211,138,55,17,IDCANCEL,0x80,"Close");
+    Control(BS_GROUPBOX,8,133,258,49,40,0x80,"Serial diagnostics");
+    Control(SS_LEFT,17,151,65,12,41,0x82,"Output:");
+    Control(CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP,
+            91,148,98,90,IDC_SERIAL_PORT,0x85,"");
+    Control(BS_PUSHBUTTON|WS_TABSTOP,199,149,58,17,
+            IDC_SERIAL_APPLY,0x80,"Apply");
+    Control(BS_PUSHBUTTON|WS_TABSTOP,8,194,58,17,IDC_INSTALL,0x80,"Install");
+    Control(BS_PUSHBUTTON|WS_TABSTOP,74,194,65,17,IDC_REMOVE,0x80,"Uninstall");
+    Control(BS_PUSHBUTTON|WS_TABSTOP,147,194,56,17,IDC_INFO,0x80,"Info...");
+    Control(BS_DEFPUSHBUTTON|WS_TABSTOP,211,194,55,17,IDCANCEL,0x80,"Close");
     return g_main_storage;
 }
 static const void *InfoTemplate(void){
@@ -1094,6 +1125,13 @@ static const void *InfoTemplate(void){
     return g_info_storage;
 }
 static void Text(HWND wnd,int id,LPCSTR val){SetDlgItemTextA(wnd,id,val);}
+static void InitializeSerial(HWND wnd){
+    static const LPCSTR names[5]={"Off","COM1","COM2","COM3","COM4"};
+    DWORD i;
+    for(i=0;i<5;++i)
+        SendDlgItemMessageA(wnd,IDC_SERIAL_PORT,CB_ADDSTRING,0,
+                            (LPARAM)names[i]);
+}
 static void UpdateMain(HWND wnd){
     char driver[100],version[100];
     LPCSTR state=g_probe.running?"Running":"Stopped";
@@ -1119,6 +1157,9 @@ static void UpdateMain(HWND wnd){
         (g_InstalledVersionKnown&&
          VersionCompare(g_InstalledVersionMS,g_InstalledVersionLS)<0));
     EnableWindow(GetDlgItem(wnd,IDC_REMOVE),g_probe.installed);
+    SendDlgItemMessageA(wnd,IDC_SERIAL_PORT,CB_SETCURSEL,g_SerialPort,0);
+    EnableWindow(GetDlgItem(wnd,IDC_SERIAL_PORT),g_probe.installed&&g_probe.running);
+    EnableWindow(GetDlgItem(wnd,IDC_SERIAL_APPLY),g_probe.installed&&g_probe.running);
 }
 static void MakeVersion(char *text){
     struct OSVERSIONINFOA v;char major[12],minor[12],build[12];
@@ -1160,6 +1201,7 @@ static BOOL Refresh(void){
     if(!m)return FALSE;
     ok=Scan(m,&g_probe);
     RefreshInstalledVersion(g_probe.installed);
+    ReadSerialPort();
     CloseServiceHandle(m);
     return ok;
 }
@@ -1175,13 +1217,23 @@ static LONG WINAPI InfoDialog(HWND wnd,UINT msg,WPARAM w,LPARAM l){
 }
 static LONG WINAPI MainDialog(HWND wnd,UINT msg,WPARAM w,LPARAM l){
     (void)l;
-    if(msg==WM_INITDIALOG){Refresh();UpdateMain(wnd);return TRUE;}
+    if(msg==WM_INITDIALOG){
+        InitializeSerial(wnd);
+        Refresh();UpdateMain(wnd);return TRUE;
+    }
     if(msg==WM_CLOSE){EndDialog(wnd,0);return TRUE;}
     if(msg==WM_COMMAND){
         if((WORD)w==IDCANCEL){EndDialog(wnd,0);return TRUE;}
         if((WORD)w==IDC_INFO){
             DialogBoxIndirectParamA(GetModuleHandleA(NULL),InfoTemplate(),wnd,InfoDialog,0);
             return TRUE;
+        }
+        if((WORD)w==IDC_SERIAL_APPLY){
+            LONG choice=SendDlgItemMessageA(wnd,IDC_SERIAL_PORT,CB_GETCURSEL,0,0);
+            ResetFailure();
+            if(choice>=0&&choice<=4&&!ConfigureSerialPort((DWORD)choice))
+                ShowFailure(wnd,"Serial configuration failed: ");
+            ReadSerialPort();UpdateMain(wnd);return TRUE;
         }
         if((WORD)w==IDC_INSTALL){
             SC_HANDLE m;BOOL ok=FALSE;
