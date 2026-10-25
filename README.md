@@ -10,7 +10,7 @@ The ACPI S5 backend uses firmware-provided FADT registers and AML without QEMU-s
 - **Windows NT 4.0 SP6 (x86):** shutdown and restart on QEMU PIIX4.
 - **Other NT versions:** unsupported until their kernel interfaces and shutdown paths have been validated.
 
-The kernel hook recognizes specific NT 3.51 and NT 4.0 kernel profiles. The ACPI power-off path has been tested with QEMU PIIX4 firmware; compatibility with other ACPI firmware is not established. Unsupported configurations fall back to the original HAL.
+The kernel hook validates its shutdown call site, HAL import and IAT dynamically. Winlogon patching requires a matching shutdown instruction sequence at a recognized image-relative location; other layouts are rejected. Structural matches on untested NT builds are not guaranteed compatible. The ACPI power-off path has been tested with QEMU PIIX4 firmware; compatibility with other ACPI firmware is not established. Unsupported configurations retain the original shutdown behavior.
 
 ## Components
 
