@@ -191,6 +191,7 @@ static DWORD g_pos;
 static HANDLE g_Output = (HANDLE)-1;
 static HANDLE g_FallbackLog = (HANDLE)-1;
 static BOOL g_CliMode = FALSE;
+static BOOL g_ScanQuiet = FALSE;
 static char g_LastFailure[180];
 static DWORD g_LastErrorCode;
 static BOOL g_InstalledVersionKnown = FALSE;
@@ -471,12 +472,12 @@ static BOOL Install(SC_HANDLE m) {
         SERVICE_KERNEL_DRIVER,SERVICE_DEMAND_START,SERVICE_ERROR_NORMAL,
         "\\SystemRoot\\System32\\Drivers\\NTPWR.SYS",NULL,NULL,NULL,NULL,NULL);
     if(!s){Error("CreateService");DeleteWritable(dst);return FALSE;}
-    CloseServiceHandle(s);Print("Driver installed.\r\n");return TRUE;
+    CloseServiceHandle(s);if(!g_ScanQuiet)Print("Driver installed.\r\n");return TRUE;
 }
 static BOOL Start(SC_HANDLE m) {
     SC_HANDLE s=Service(m);BOOL ok=FALSE;
     if(!s){Error("OpenService");return FALSE;}
-    if(StartServiceA(s,0,NULL)){Print("Driver loaded.\r\n");ok=TRUE;}
+    if(StartServiceA(s,0,NULL)){if(!g_ScanQuiet)Print("Driver loaded.\r\n");ok=TRUE;}
     else if(GetLastError()==ERROR_SERVICE_ALREADY_RUNNING){ok=TRUE;}
     else Error("StartService");
     CloseServiceHandle(s);return ok;
@@ -503,7 +504,7 @@ static BOOL Stop(SC_HANDLE m) {
     ok=TRUE;
 done:
     CloseServiceHandle(s);
-    if(ok)Print("Driver stopped.\r\n");
+    if(ok&&!g_ScanQuiet)Print("Driver stopped.\r\n");
     return ok;
 }
 static BOOL Remove(SC_HANDLE m) {
@@ -516,16 +517,16 @@ static BOOL Remove(SC_HANDLE m) {
             Error("ControlService");goto done;
         }
         if(!WaitStopped(s)){Fail("Driver did not stop");goto done;}
-        Print("Driver stopped.\r\n");
+        if(!g_ScanQuiet)Print("Driver stopped.\r\n");
     }
     if(!DeleteService(s)){Error("DeleteService");goto done;}
-    ok=TRUE;Print("Driver service removed.\r\n");
+    ok=TRUE;if(!g_ScanQuiet)Print("Driver service removed.\r\n");
 done:
     CloseServiceHandle(s);
     if(ok&&Paths(src,dst)){
         if(!DeleteWritable(dst)){
             Print("Warning: unable to delete driver file: ");PrintHex(GetLastError());Print("\r\n");
-        }else Print("Driver file removed.\r\n");
+        }else if(!g_ScanQuiet)Print("Driver file removed.\r\n");
     }
     return ok;
 }
@@ -974,8 +975,9 @@ static BOOL Scan(SC_HANDLE m,PROBE *p) {
     p->hook_checked=FALSE;p->hook_verified=FALSE;p->hook_result=0;
     if(!ServiceState(m,&was_installed,&was_running))return FALSE;
     p->installed=was_installed;p->running=was_running;
+    g_ScanQuiet=TRUE;
     if(!was_installed){
-        if(!Install(m))return FALSE;
+        if(!Install(m)){g_ScanQuiet=FALSE;return FALSE;}
         temporary=TRUE;
     }
     if(!was_running){
@@ -992,6 +994,7 @@ cleanup:
         if(!Stop(m))ok=FALSE;
     }
     p->installed=was_installed;p->running=was_running;
+    g_ScanQuiet=FALSE;
     return ok;
 }
 static void PrintProbe(const PROBE *p) {
@@ -1009,8 +1012,10 @@ static void PrintProbe(const PROBE *p) {
         Print(" namespace=");PrintHex(p->ns);
         Print(" eval=");PrintHex(p->eval);Print("\r\n");
     }
-    Print("NTPWR: APM not implemented (not probed)\r\n");
-    Print("NTPWR: ACPI S5 ");Print(p->backend?"registers mapped\r\n":"not ready\r\n");
+    Print("NTPWR: APM not implemented\r\n");
+    if(p->backend)Print("NTPWR: ACPI S5 ready\r\n");
+    else if(p->scanned)
+        Print("NTPWR: ERROR: ACPI S5 unavailable; power-off disabled\r\n");
     if(p->hook_checked){
         Print("NTPWR: Hook: ");
         Print(p->hook_result==NTPWR_OK&&!p->hook_verified?
@@ -1042,7 +1047,8 @@ static BOOL Run(LPCSTR action) {
     else if(Equals(action,"REMOVE"))ok=RemoveFull(m);
     else if(Equals(action,"SCAN")){
         ok=Scan(m,&g_probe);PrintProbe(&g_probe);
-    }else if(Equals(action,"INFO")||Equals(action,"RESULT")){
+        if(ok&&!g_probe.backend)ok=FALSE;
+    }else if(Equals(action,"INFO")){
         BOOL found=FALSE,running=FALSE;
         if(ServiceState(m,&found,&running)&&found&&running){
             g_probe.installed=found;g_probe.running=running;
@@ -1052,6 +1058,7 @@ static BOOL Run(LPCSTR action) {
         }else{
             ok=Scan(m,&g_probe);PrintProbe(&g_probe);
         }
+        if(ok&&!g_probe.backend)ok=FALSE;
     }else if(Equals(action,"STATUS")){
         BOOL found=FALSE,running=FALSE;
         ok=ServiceState(m,&found,&running);
@@ -1281,10 +1288,26 @@ void __cdecl Entry(void){
         ok=ConfigureSerial(arg);
         CliExit(ok?0:1);
     }
-    if(!Equals(arg,"INSTALL")&&!Equals(arg,"UPGRADE")&&!Equals(arg,"START")&&!Equals(arg,"STOP")&&
-       !Equals(arg,"REMOVE")&&!Equals(arg,"STATUS")&&!Equals(arg,"SCAN")&&
-       !Equals(arg,"INFO")&&!Equals(arg,"RESULT")){
-        Print("Usage: NTPWR [SCAN|INFO|WINLOGON|INSTALL|UPGRADE|START|STATUS|STOP|REMOVE|SERIAL COM1-COM4|SERIAL OFF]\r\n");
+    if(Equals(arg,"HELP")||Equals(arg,"-H")||Equals(arg,"--HELP")||
+       Equals(arg,"/?")){
+        Print("NTPWR " NTPWR_VERSION_DISPLAY "\r\n"
+              "Usage: NTPWR <command>\r\n\r\n"
+              "  SCAN          Check kernel and ACPI support\r\n"
+              "  INFO          Show driver diagnostics\r\n"
+              "  STATUS        Show driver state\r\n"
+              "  INSTALL       Install or upgrade NTPWR\r\n"
+              "  UPGRADE       Upgrade an existing installation\r\n"
+              "  REMOVE        Uninstall NTPWR\r\n"
+              "  SERIAL COM1-4 Enable serial diagnostics\r\n"
+              "  SERIAL OFF    Disable serial diagnostics\r\n"
+              "  HELP          Show this help\r\n");
+        CliExit(0);
+    }
+    if(!Equals(arg,"INSTALL")&&!Equals(arg,"UPGRADE")&&
+       !Equals(arg,"START")&&!Equals(arg,"STOP")&&
+       !Equals(arg,"REMOVE")&&!Equals(arg,"STATUS")&&
+       !Equals(arg,"SCAN")&&!Equals(arg,"INFO")){
+        Print("Unknown command. Use NTPWR HELP.\r\n");
         CliExit(2);
     }
     ResetFailure();

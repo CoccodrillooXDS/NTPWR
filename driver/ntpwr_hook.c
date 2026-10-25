@@ -503,10 +503,8 @@ static NTSTATUS PvArm(BOOLEAN Experimental)
         return STATUS_NOT_SUPPORTED;
     if (g_Report.IatAddress == 0)
         return STATUS_NOT_SUPPORTED;
-    if (g_Report.AcpiReady == 0) {
-        g_Report.Result = NTPWR_NO_ACPI_SHUTDOWN;
+    if (g_Report.AcpiReady == 0)
         return STATUS_NOT_SUPPORTED;
-    }
 
     g_Iat = (volatile LONG *)(ULONG)g_Report.IatAddress;
     if ((ULONG)*g_Iat != g_Report.HalTarget) {
@@ -652,7 +650,7 @@ static BOOLEAN PvReadOption(PUNICODE_STRING RegistryPath,
 
 NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
 {
-    NTSTATUS Status;
+    NTSTATUS Status, ArmStatus;
     ULONG SerialPort = 0, AutoArm = 0;
     RtlInitUnicodeString(&g_DeviceName, L"\\Device\\NTPWR");
     RtlInitUnicodeString(&g_SymbolicName, L"\\DosDevices\\NTPWR");
@@ -678,10 +676,19 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
     (void)NtpwrProbeInitialize(DriverObject, RegistryPath);
     PvScan();
     if (PvReadOption(RegistryPath, L"AutoArm", &AutoArm) && AutoArm == 1UL) {
-        if (!NT_SUCCESS(PvArm(FALSE))) {
-            PvLog("NTPWR: Automatic hook failed; result=");
-            PvLogHex(g_Report.Result);
-            PvLog("\r\n");
+        ArmStatus = PvArm(FALSE);
+        if (!NT_SUCCESS(ArmStatus)) {
+            if (!g_Report.AcpiReady)
+                PvLog("NTPWR: ERROR: ACPI S5 unavailable; hook not installed\r\n");
+            else {
+                PvLog("NTPWR: Automatic hook failed; status=");
+                PvLogHex((ULONG)ArmStatus);
+                if (g_Report.Result != NTPWR_OK) {
+                    PvLog(" result=");
+                    PvLogHex(g_Report.Result);
+                }
+                PvLog("\r\n");
+            }
         }
     }
     return STATUS_SUCCESS;
