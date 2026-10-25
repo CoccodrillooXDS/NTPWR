@@ -579,10 +579,10 @@ static BOOL InspectPid(DWORD Pid)
         Basic[1] >= 0x10000UL && Basic[1] < 0x80000000UL &&
         Read(Process, Basic[1] + 8UL, ImageBase, sizeof(ImageBase)))
         Base = Dword(ImageBase, 0);
-    if (Base >= 0x10000UL && Base < 0x80000000UL &&
-        Read(Process, Base, ImageBase, 2) &&
-        ImageBase[0] == 'M' && ImageBase[1] == 'Z') {
-    } else Base = g_Nt4 ? NT4_BASE : NT351_BASE;
+    if (Base < 0x10000UL || Base >= 0x80000000UL ||
+        !Read(Process, Base, ImageBase, 2) ||
+        ImageBase[0] != 'M' || ImageBase[1] != 'Z')
+        Base = g_Nt4 ? NT4_BASE : NT351_BASE;
     Found = g_Nt4 ?
         CheckImage(Process, Base, NT4_PATCH_RVA, NT4_STAMP,
                    NT4_CHECK, NT4_SIZE, NT4Bytes, Pid, TRUE, "NT 4.0") :
