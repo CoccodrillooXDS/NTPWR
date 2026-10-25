@@ -103,6 +103,89 @@ static BOOLEAN PvEqual(PUCHAR P, const char *S, ULONG Max)
     return FALSE;
 }
 
+static BOOLEAN PvEqualIgnoreCase(PUCHAR P, const char *S, ULONG Max)
+{
+    ULONG I;
+    for (I = 0; I < Max; ++I) {
+        UCHAR A = P[I], B = (UCHAR)S[I];
+        if (A >= 'A' && A <= 'Z') A += 'a' - 'A';
+        if (B >= 'A' && B <= 'Z') B += 'a' - 'A';
+        if (A != B) return FALSE;
+        if (B == 0) return TRUE;
+    }
+    return FALSE;
+}
+
+static BOOLEAN PvHalExportAt(ULONG ModuleBase, ULONG Target)
+{
+    PUCHAR Base = (PUCHAR)(ULONG)ModuleBase;
+    PUCHAR Nt, Opt, Export;
+    ULONG Offset, Size, ExpRva, ExpSize, NameRva;
+    ULONG Functions, Names, Ordinals, FunctionCount, NameCount;
+    ULONG I, Index, FunctionRva;
+
+    if (!PvMapped(Base, 0x100) || Pv16(Base) != 0x5A4D) return FALSE;
+    Offset = Pv32(Base + 0x3C);
+    if (Offset < 0x40 || Offset > 0x1000 ||
+        !PvMapped(Base + Offset, 0x100)) return FALSE;
+    Nt = Base + Offset;
+    Opt = Nt + 24;
+    if (Pv32(Nt) != 0x00004550UL || Pv16(Nt + 4) != 0x014C ||
+        Pv16(Nt + 20) < 0xE0 || Pv16(Opt) != 0x010B ||
+        Pv32(Opt + 92) == 0) return FALSE;
+    Size = Pv32(Opt + 56);
+    if (Size < 0x1000 || Size > 0x200000UL ||
+        Target < ModuleBase || Target - ModuleBase >= Size) return FALSE;
+    ExpRva = Pv32(Opt + 96);
+    ExpSize = Pv32(Opt + 100);
+    if (ExpSize < 40 || !PvRvaMapped(Base, Size, ExpRva, 40))
+        return FALSE;
+    Export = Base + ExpRva;
+    NameRva = Pv32(Export + 12);
+    if (!PvRvaMapped(Base, Size, NameRva, 8) ||
+        !PvEqualIgnoreCase(Base + NameRva, "HAL.dll", 8))
+        return FALSE;
+
+    FunctionCount = Pv32(Export + 20);
+    NameCount = Pv32(Export + 24);
+    Functions = Pv32(Export + 28);
+    Names = Pv32(Export + 32);
+    Ordinals = Pv32(Export + 36);
+    if (FunctionCount == 0 || FunctionCount > 4096 ||
+        NameCount == 0 || NameCount > FunctionCount ||
+        !PvRvaMapped(Base, Size, Functions, FunctionCount * 4UL) ||
+        !PvRvaMapped(Base, Size, Names, NameCount * 4UL) ||
+        !PvRvaMapped(Base, Size, Ordinals, NameCount * 2UL))
+        return FALSE;
+
+    for (I = 0; I < NameCount; ++I) {
+        NameRva = Pv32(Base + Names + I * 4UL);
+        if (!PvRvaMapped(Base, Size, NameRva, 20) ||
+            !PvEqual(Base + NameRva, "HalReturnToFirmware", 20))
+            continue;
+        Index = Pv16(Base + Ordinals + I * 2UL);
+        if (Index >= FunctionCount) return FALSE;
+        FunctionRva = Pv32(Base + Functions + Index * 4UL);
+        if (FunctionRva >= ExpRva &&
+            FunctionRva - ExpRva < ExpSize) return FALSE;
+        return FunctionRva < Size &&
+               ModuleBase + FunctionRva == Target;
+    }
+    return FALSE;
+}
+
+static BOOLEAN PvVerifyHalExport(ULONG Target)
+{
+    ULONG Page, I;
+    if (Target < 0x80000000UL) return FALSE;
+    Page = Target & ~0xFFFUL;
+    for (I = 0; I < 512 && Page >= 0x80000000UL; ++I) {
+        if (PvHalExportAt(Page, Target)) return TRUE;
+        Page -= 0x1000UL;
+    }
+    return FALSE;
+}
+
 static ULONG PvFindHalImport(PUCHAR Base, ULONG ImageSize, ULONG Opt)
 {
     ULONG ImportRva, ImportSize, Desc, N, Oft, First, NameRva, T;
@@ -122,7 +205,7 @@ static ULONG PvFindHalImport(PUCHAR Base, ULONG ImageSize, ULONG Opt)
         if (Oft == 0 && First == 0) break;
         if (Oft == 0 || First == 0) continue;
         if (!PvRvaMapped(Base, ImageSize, NameRva, 8)) continue;
-        if (!PvEqual(Base + NameRva, "HAL.dll", 8)) continue;
+        if (!PvEqualIgnoreCase(Base + NameRva, "HAL.dll", 8)) continue;
         for (T = 0; T < 512UL; ++T) {
             Lookup = Oft + T * 4UL;
             if (!PvRvaMapped(Base, ImageSize, Lookup, 4)) break;
@@ -290,8 +373,11 @@ static VOID PvScan(VOID)
         return;
     }
     if (!(g_Report.Flags & NTPWR_FLAG_KNOWN) && ImportSlot == 0) {
-        g_Report.Result = NTPWR_NOT_VERIFIED;
-        return;
+        if (!PvVerifyHalExport(g_Report.HalTarget)) {
+            g_Report.Result = NTPWR_NOT_VERIFIED;
+            return;
+        }
+        g_Report.Flags |= NTPWR_FLAG_HAL_EXPORT;
     }
     g_Report.Result = NTPWR_OK;
     g_Report.Flags |= NTPWR_FLAG_COMPATIBLE;
@@ -348,6 +434,7 @@ static NTSTATUS PvArm(BOOLEAN Experimental)
         return STATUS_NOT_SUPPORTED;
     if (!(g_Report.Flags & NTPWR_FLAG_KNOWN) &&
         !(g_Report.Flags & NTPWR_FLAG_IMPORT) &&
+        !(g_Report.Flags & NTPWR_FLAG_HAL_EXPORT) &&
         !(Experimental && (g_Report.Flags & NTPWR_FLAG_FILE_IMPORT)))
         return STATUS_NOT_SUPPORTED;
     if (g_Report.IatAddress == 0)

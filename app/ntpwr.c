@@ -347,7 +347,7 @@ static LPCSTR HookStatus(DWORD result) {
     case NTPWR_AMBIGUOUS_BRANCH:return "Ambiguous shutdown path";
     case NTPWR_BAD_IAT:
     case NTPWR_BAD_HAL_TARGET:return "HAL import not verified";
-    case NTPWR_NOT_VERIFIED:return "HAL import not verified";
+    case NTPWR_NOT_VERIFIED:return "HAL target not verified";
     case NTPWR_ALREADY_MODIFIED:return "HAL import already modified";
     case NTPWR_NO_ACPI_SHUTDOWN:return "ACPI S5 unavailable";
     default:return "Not supported";

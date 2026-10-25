@@ -32,6 +32,7 @@
 #define NTPWR_FLAG_COMPATIBLE 4UL
 #define NTPWR_FLAG_ARMED 8UL
 #define NTPWR_FLAG_FILE_IMPORT 32UL
+#define NTPWR_FLAG_HAL_EXPORT 64UL
 
 #pragma pack(4)
 typedef struct _NTPWR_FILE_IMPORT {
