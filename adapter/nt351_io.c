@@ -96,9 +96,8 @@ uacpi_status __cdecl uacpi_kernel_io_write8(
     uacpi_status status = nt351_port_address(handle, offset, 1, &port);
     if (status != UACPI_STATUS_OK)
         return status;
-    /* Diagnostic profile: no port writes while testing AML. */
-    (void)value;
-    return UACPI_STATUS_DENIED;
+    WRITE_PORT_UCHAR((NT351_U8 *)(uacpi_uintptr)port, value);
+    return UACPI_STATUS_OK;
 }
 
 uacpi_status __cdecl uacpi_kernel_io_write16(
@@ -108,9 +107,8 @@ uacpi_status __cdecl uacpi_kernel_io_write16(
     uacpi_status status = nt351_port_address(handle, offset, 2, &port);
     if (status != UACPI_STATUS_OK)
         return status;
-    /* Diagnostic profile: no port writes while testing AML. */
-    (void)value;
-    return UACPI_STATUS_DENIED;
+    WRITE_PORT_USHORT((unsigned short *)(uacpi_uintptr)port, value);
+    return UACPI_STATUS_OK;
 }
 
 uacpi_status __cdecl uacpi_kernel_io_write32(
@@ -120,7 +118,6 @@ uacpi_status __cdecl uacpi_kernel_io_write32(
     uacpi_status status = nt351_port_address(handle, offset, 4, &port);
     if (status != UACPI_STATUS_OK)
         return status;
-    /* Diagnostic profile: no port writes while testing AML. */
-    (void)value;
-    return UACPI_STATUS_DENIED;
+    WRITE_PORT_ULONG((NT351_U32 *)(uacpi_uintptr)port, value);
+    return UACPI_STATUS_OK;
 }

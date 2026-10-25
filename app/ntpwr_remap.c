@@ -19,7 +19,11 @@
 #define SPI_NAME_POINTER 0x3CUL
 #define SPI_PROCESS_ID 0x44UL
 #define SPI_MIN_SIZE 0x88UL
-#define STUB_LENGTH 22UL
+#define LEGACY_STUB_LENGTH 22UL
+#define STUB_LENGTH 68UL
+#define STUB_HANDLE_OFFSET 46UL
+#define STUB_FUNCTION_OFFSET 51UL
+#define STUB_JUMP_OFFSET 64UL
 #define ACTION_STATUS  0
 #define ACTION_PATCH   1
 #define ACTION_RESTORE 2
@@ -60,6 +64,7 @@ static NT_ALLOCATE_VIRTUAL_MEMORY g_NtAllocate = NULL;
 static PROTECT_EX g_ProtectEx = NULL;
 static NT_FREE_VIRTUAL_MEMORY g_NtFree = NULL;
 static FLUSH_ICACHE g_Flush = NULL;
+static LPVOID g_NtDeviceIoControlFile = NULL;
 
 static void Out(const char *String)
 {
@@ -155,40 +160,89 @@ static BOOL WriteRemote(HANDLE Process, DWORD Address, const BYTE *Buffer,
     return Done == Length;
 }
 
-static void BuildStub(BYTE *Stub, DWORD StubAddress, DWORD PatchAddress,
-                      BOOL Nt4)
+static void BuildLegacyStub(BYTE *Stub, DWORD StubAddress,
+                            DWORD PatchAddress, BOOL Nt4)
 {
-    static const BYTE Template351[STUB_LENGTH] = {
-        0x8B,0x5C,0x24,0x14, 0x9C, 0x83,0xFB,0x05,
-        0x75,0x05, 0xBB,0x0A,0,0,0, 0x9D,0x53,
+    static const BYTE Template351[LEGACY_STUB_LENGTH] = {
+        0x8B,0x5C,0x24,0x14, 0x9C,0x83,0xFB,0x05,
+        0x75,0x05,0xBB,0x0A,0,0,0,0x9D,0x53,
         0xE9,0,0,0,0
     };
-    static const BYTE Template4[STUB_LENGTH] = {
-        0x8B,0x74,0x24,0x18, 0x9C, 0x83,0xFE,0x05,
-        0x75,0x05, 0xBE,0x0A,0,0,0, 0x9D,0x56,
+    static const BYTE Template4[LEGACY_STUB_LENGTH] = {
+        0x8B,0x74,0x24,0x18, 0x9C,0x83,0xFE,0x05,
+        0x75,0x05,0xBE,0x0A,0,0,0,0x9D,0x56,
         0xE9,0,0,0,0
+    };
+    const BYTE *Template = Nt4 ? Template4 : Template351;
+    DWORD I;
+    for (I = 0; I < LEGACY_STUB_LENGTH; ++I) Stub[I] = Template[I];
+    StoreDword(Stub, 18, (PatchAddress + 5UL) -
+                            (StubAddress + LEGACY_STUB_LENGTH));
+}
+
+static void BuildStub(BYTE *Stub, DWORD StubAddress, DWORD PatchAddress,
+                      BOOL Nt4, DWORD RemoteHandle, DWORD NtIoctl)
+{
+    static const BYTE Template[STUB_LENGTH] = {
+        0x8B,0x5C,0x24,0x14,0x9C,0x83,0xFB,0x05,0x75,0x33,
+        0xBB,0x0A,0,0,0,0x60,0x83,0xEC,0x10,0x8D,0x44,0x24,
+        0x08,0x8D,0x0C,0x24,0x6A,0x04,0x50,0x6A,0,0x6A,0,
+        0x68,0x14,0x20,0x22,0,0x51,0x6A,0,0x6A,0,0x6A,0,
+        0x68,0,0,0,0,0xB8,0,0,0,0,0xFF,0xD0,0x83,0xC4,
+        0x10,0x61,0x9D,0x53,0xE9,0,0,0,0
     };
     DWORD I;
-    const BYTE *Template = Nt4 ? Template4 : Template351;
     for (I = 0; I < STUB_LENGTH; ++I) Stub[I] = Template[I];
-    StoreDword(Stub, 18, (PatchAddress + 5UL) - (StubAddress + STUB_LENGTH));
+    if (Nt4) {
+        Stub[1] = 0x74; Stub[3] = 0x18;
+        Stub[6] = 0xFE; Stub[10] = 0xBE; Stub[62] = 0x56;
+    }
+    StoreDword(Stub, STUB_HANDLE_OFFSET, RemoteHandle);
+    StoreDword(Stub, STUB_FUNCTION_OFFSET, NtIoctl);
+    StoreDword(Stub, STUB_JUMP_OFFSET,
+               (PatchAddress + 5UL) - (StubAddress + STUB_LENGTH));
 }
 
 static BOOL ReadVerifiedStub(HANDLE Process, DWORD PatchAddress,
                              const BYTE *PatchBytes, BOOL Nt4,
-                             DWORD *StubAddress)
+                             DWORD *StubAddress, DWORD *RemoteHandle,
+                             BOOL *Modern)
 {
-    BYTE Actual[STUB_LENGTH];
-    BYTE Expected[STUB_LENGTH];
+    BYTE Actual[STUB_LENGTH], Expected[STUB_LENGTH];
     DWORD Target;
     if (PatchBytes[0] != 0xE9) return FALSE;
     Target = PatchAddress + 5UL + Dword(PatchBytes, 1);
     if (Target < 0x10000UL || Target >= 0x80000000UL) return FALSE;
     if (!Read(Process, Target, Actual, STUB_LENGTH)) return FALSE;
-    BuildStub(Expected, Target, PatchAddress, Nt4);
-    if (!SameBytes(Actual, Expected, STUB_LENGTH)) return FALSE;
+
+    BuildStub(Expected, Target, PatchAddress, Nt4,
+              Dword(Actual, STUB_HANDLE_OFFSET),
+              Dword(Actual, STUB_FUNCTION_OFFSET));
+    if (SameBytes(Actual, Expected, STUB_LENGTH)) {
+        *StubAddress = Target;
+        *RemoteHandle = Dword(Actual, STUB_HANDLE_OFFSET);
+        *Modern = TRUE;
+        return TRUE;
+    }
+
+    BuildLegacyStub(Expected, Target, PatchAddress, Nt4);
+    if (!SameBytes(Actual, Expected, LEGACY_STUB_LENGTH)) return FALSE;
     *StubAddress = Target;
+    *RemoteHandle = 0;
+    *Modern = FALSE;
     return TRUE;
+}
+
+static BOOL CloseRemoteHandle(HANDLE Process, DWORD RemoteHandle)
+{
+    HANDLE LocalHandle = NULL;
+    BOOL Result;
+    if (!RemoteHandle) return FALSE;
+    Result = DuplicateHandle(Process, (HANDLE)RemoteHandle, GetCurrentProcess(),
+                             &LocalHandle, 0, FALSE,
+                             DUPLICATE_CLOSE_SOURCE | DUPLICATE_SAME_ACCESS);
+    if (LocalHandle) CloseHandle(LocalHandle);
+    return Result;
 }
 
 static BOOL ReplaceCode(HANDLE Process, DWORD Address, const BYTE *NewBytes,
@@ -246,9 +300,10 @@ static BOOL CheckImage(HANDLE Process, DWORD Base, DWORD Patch,
     BYTE Stub[STUB_LENGTH];
     BYTE Verify[STUB_LENGTH];
     DWORD PeOffset;
-    DWORD StubAddress = 0;
+    DWORD StubAddress = 0, RemoteHandle = 0;
+    HANDLE DeviceHandle = INVALID_HANDLE_VALUE;
     BOOL IsOriginal;
-    BOOL IsPatched;
+    BOOL IsPatched, Modern = FALSE;
     DWORD AllocAddress;
     PVOID AllocationBase;
     ULONG AllocationSize;
@@ -279,7 +334,8 @@ static BOOL CheckImage(HANDLE Process, DWORD Base, DWORD Patch,
     }
     Out("\r\nPatch bytes:"); PrintBytes(Site, sizeof(Site)); Out("\r\n");
     IsOriginal = SameBytes(Site, Original, sizeof(Site));
-    IsPatched = ReadVerifiedStub(Process, Patch, Site, Nt4, &StubAddress);
+    IsPatched = ReadVerifiedStub(Process, Patch, Site, Nt4,
+                                 &StubAddress, &RemoteHandle, &Modern);
     if (IsPatched) {
         Out("Patch state: installed; trampoline="); Hex(StubAddress);
         Out("\r\n");
@@ -296,6 +352,10 @@ static BOOL CheckImage(HANDLE Process, DWORD Base, DWORD Patch,
         return TRUE;
     }
     if (g_Action == ACTION_PATCH && IsPatched) {
+        if (!Modern) {
+            Out("Legacy patch installed; remove the previous installation\r\n");
+            return TRUE;
+        }
         g_Succeeded = TRUE;
         Out("PATCH already installed.\r\n");
         return TRUE;
@@ -306,12 +366,15 @@ static BOOL CheckImage(HANDLE Process, DWORD Base, DWORD Patch,
         return TRUE;
     }
     if (!g_ProtectEx || !g_Flush ||
-        (g_Action == ACTION_PATCH && (!g_NtAllocate || !g_NtFree))) {
+        (g_Action == ACTION_PATCH &&
+         (!g_NtAllocate || !g_NtFree || !g_NtDeviceIoControlFile))) {
         Out("Required memory APIs unavailable\r\nResult: FAILED\r\n");
         return TRUE;
     }
     if (g_Action == ACTION_RESTORE) {
         if (ReplaceCode(Process, Patch, Original, Site, sizeof(Site))) {
+            if (Modern && !CloseRemoteHandle(Process, RemoteHandle))
+                Out("Remote handle cleanup failed\r\n");
             g_Succeeded = TRUE;
             Out("RESTORE complete.\r\n");
         } else {
@@ -320,6 +383,16 @@ static BOOL CheckImage(HANDLE Process, DWORD Base, DWORD Patch,
         return TRUE;
     }
 
+    {
+        BYTE RemoteCode[16];
+        if (!Read(Process, (DWORD)g_NtDeviceIoControlFile,
+                  RemoteCode, sizeof(RemoteCode)) ||
+            !SameBytes(RemoteCode, (const BYTE *)g_NtDeviceIoControlFile,
+                       sizeof(RemoteCode))) {
+            Out("Winlogon NtDeviceIoControlFile mapping differs\r\n");
+            return TRUE;
+        }
+    }
     AllocationBase = NULL;
     AllocationSize = 4096UL;
     AllocationStatus = g_NtAllocate(Process, &AllocationBase, 0UL,
@@ -342,13 +415,31 @@ static BOOL CheckImage(HANDLE Process, DWORD Base, DWORD Patch,
         }
         return TRUE;
     }
-    BuildStub(Stub, AllocAddress, Patch, Nt4);
+    DeviceHandle = CreateFileA("\\\\.\\NTPWR", GENERIC_READ | GENERIC_WRITE,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE,
+                               NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (DeviceHandle == INVALID_HANDLE_VALUE ||
+        !DuplicateHandle(GetCurrentProcess(), DeviceHandle, Process,
+                         (HANDLE *)&RemoteHandle, 0, FALSE,
+                         DUPLICATE_SAME_ACCESS)) {
+        Out("NTPWR device handle duplication failed: ");
+        Hex(GetLastError()); Out("\r\n");
+        if (DeviceHandle != INVALID_HANDLE_VALUE) CloseHandle(DeviceHandle);
+        AllocationBase = (PVOID)AllocAddress;
+        AllocationSize = 0UL;
+        g_NtFree(Process, &AllocationBase, &AllocationSize, MEM_RELEASE);
+        return TRUE;
+    }
+    CloseHandle(DeviceHandle);
+    BuildStub(Stub, AllocAddress, Patch, Nt4, RemoteHandle,
+              (DWORD)g_NtDeviceIoControlFile);
     if (!WriteRemote(Process, AllocAddress, Stub, STUB_LENGTH) ||
         !Read(Process, AllocAddress, Verify, STUB_LENGTH) ||
         !SameBytes(Verify, Stub, STUB_LENGTH) ||
         !g_Flush(Process, (LPCVOID)AllocAddress, STUB_LENGTH)) {
         Out("Trampoline initialization failed: "); Hex(GetLastError());
         Out("\r\nResult: FAILED\r\n");
+        CloseRemoteHandle(Process, RemoteHandle);
         AllocationBase = (PVOID)AllocAddress;
         AllocationSize = 0UL;
         FreeStatus = g_NtFree(Process, &AllocationBase, &AllocationSize, MEM_RELEASE);
@@ -362,11 +453,12 @@ static BOOL CheckImage(HANDLE Process, DWORD Base, DWORD Patch,
     StoreDword(Jump, 1, AllocAddress - (Patch + 5UL));
     if (!ReplaceCode(Process, Patch, Jump, Original, sizeof(Jump))) {
         Out("PATCH failed.\r\n");
-        /* Keep the trampoline allocated if the patch may still reference it. */
+        /* Retain the handle if the remote trampoline could still execute. */
         return TRUE;
     }
     if (!Read(Process, Patch, Site, sizeof(Site)) ||
-        !ReadVerifiedStub(Process, Patch, Site, Nt4, &StubAddress)) {
+        !ReadVerifiedStub(Process, Patch, Site, Nt4,
+                          &StubAddress, &RemoteHandle, &Modern) || !Modern) {
         Out("PATCH verification failed.\r\n");
         return TRUE;
     }
@@ -441,7 +533,7 @@ static BOOL InspectPid(DWORD Pid)
 
     Rights = PROCESS_QUERY_INFORMATION | PROCESS_VM_READ;
     if (g_Action != ACTION_STATUS)
-        Rights |= PROCESS_VM_WRITE | PROCESS_VM_OPERATION;
+        Rights |= PROCESS_VM_WRITE | PROCESS_VM_OPERATION | PROCESS_DUP_HANDLE;
     Process = OpenProcess(Rights, FALSE, Pid);
     if (Process == NULL) {
         Out("OpenProcess failed: "); Hex(GetLastError());
@@ -513,12 +605,17 @@ BOOL NtpwrRemapAction(LPCSTR Action)
                            Ntdll, "NtAllocateVirtualMemory");
         g_NtFree = (NT_FREE_VIRTUAL_MEMORY)GetProcAddress(
                        Ntdll, "NtFreeVirtualMemory");
+        g_NtDeviceIoControlFile =
+            GetProcAddress(Ntdll, "NtDeviceIoControlFile");
     }
     Out("NtAllocateVirtualMemory: "); Out(g_NtAllocate ? "available\r\n" : "unavailable\r\n");
     Out("NtFreeVirtualMemory: "); Out(g_NtFree ? "available\r\n" : "unavailable\r\n");
     Out("VirtualProtectEx: "); Out(g_ProtectEx ? "available\r\n" : "unavailable\r\n");
     Out("FlushInstructionCache: "); Out(g_Flush ? "available\r\n" : "unavailable\r\n");
 
+    if (g_Action == ACTION_PATCH && !g_NtDeviceIoControlFile) {
+        Out("NtDeviceIoControlFile unavailable\r\n"); goto Done;
+    }
     Query = Ntdll == NULL ? NULL :
         (NT_QUERY_SYSTEM_INFORMATION)GetProcAddress(Ntdll, "NtQuerySystemInformation");
     if (Query == NULL) { Out("NtQuerySystemInformation unavailable\r\n"); goto Done; }

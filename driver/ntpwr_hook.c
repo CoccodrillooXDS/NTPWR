@@ -5,6 +5,9 @@
 #define PV_DEBUG_PORT 0x00E9
 extern int __cdecl NtpwrAcpiReady(void);
 extern int __cdecl NtpwrAcpiPowerOff(void);
+extern int __cdecl NtpwrAcpiResetReady(void);
+extern int __cdecl NtpwrAcpiReset(void);
+extern ULONG __cdecl NtpwrAcpiPrepare(void);
 extern long __stdcall NtpwrProbeInitialize(void *, void *);
 extern void __stdcall NtpwrProbeCleanup(void);
 
@@ -44,6 +47,22 @@ static VOID PvLogHex(ULONG V)
     for (I = 7; I >= 0; --I)
         WRITE_PORT_UCHAR((PUCHAR)(ULONG)PV_DEBUG_PORT,
                          (UCHAR)H[(V >> (I * 4)) & 15UL]);
+}
+
+void __cdecl NtpwrTraceAcpiStatus(const char *Stage, ULONG Status)
+{
+    PvLog("NTPWR: ACPI ");
+    PvLog(Stage);
+    PvLog(" status=");
+    PvLogHex(Status);
+    PvLog("\r\n");
+}
+
+void __cdecl NtpwrTraceAcpiEvent(const char *Event)
+{
+    PvLog("NTPWR: ACPI ");
+    PvLog(Event);
+    PvLog("\r\n");
 }
 
 static BOOLEAN PvMapped(PUCHAR P, ULONG Count)
@@ -286,11 +305,17 @@ static VOID __stdcall PvHalHook(ULONG Routine)
     else if (Routine == 3) PvLog(" (REBOOT)");
     PvLog("\r\n");
 
-    if (Routine == 1 && NtpwrAcpiPowerOff()) {
-        PvLog("NTPWR: ACPI S5 issued\r\n");
-        for (;;) {
-            __asm__ __volatile__("cli\n\thlt" : : : "memory");
+    if (Routine == 1) {
+        if (NtpwrAcpiPowerOff()) {
+            for (;;) {
+                __asm__ __volatile__("cli\n\thlt" : : : "memory");
+            }
         }
+        PvLog("NTPWR: ACPI S5 unavailable; HAL fallback\r\n");
+    } else if (Routine == 3 && NtpwrAcpiResetReady()) {
+        PvLog("NTPWR: ACPI reset requested\r\n");
+        (void)NtpwrAcpiReset();
+        PvLog("NTPWR: ACPI reset returned; HAL fallback\r\n");
     }
     if (g_Original != NULL) g_Original(Routine);
 }
@@ -402,6 +427,14 @@ static NTSTATUS PvDispatch(PDEVICE_OBJECT DeviceObject, PIRP Irp)
             Status = PvArm((BOOLEAN)(Control == NTPWR_IOCTL_ARM_EXPERIMENTAL));
         } else if (Control == NTPWR_IOCTL_DISARM) {
             Status = PvDisarm();
+        } else if (Control == NTPWR_IOCTL_PREPARE_S5) {
+            if (Stack->Parameters.DeviceIoControl.OutputBufferLength <
+                sizeof(ULONG)) Status = STATUS_BUFFER_TOO_SMALL;
+            else if (!g_Armed || !NtpwrAcpiReady()) Status = STATUS_NOT_SUPPORTED;
+            else {
+                *(PULONG)Irp->AssociatedIrp.SystemBuffer = NtpwrAcpiPrepare();
+                Information = sizeof(ULONG);
+            }
         } else if (Control == NTPWR_IOCTL_VERIFY_FILE) {
             if (Stack->Parameters.DeviceIoControl.InputBufferLength <
                 sizeof(NTPWR_FILE_IMPORT))

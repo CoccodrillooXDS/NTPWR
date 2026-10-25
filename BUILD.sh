@@ -36,7 +36,7 @@ RDIR="$("$CC" -print-resource-dir)"
 FLAGS=(--target=i386-pc-windows-msvc -march=i486 -mno-sse -mno-sse2
    -std=gnu11 -ffreestanding -fno-builtin -fno-stack-protector
    -fms-extensions -O1 -nostdinc -isystem "$RDIR/include"
-   -DUACPI_REDUCED_HARDWARE -DUACPI_NATIVE_MMIO)
+   -DUACPI_NATIVE_MMIO)
 B="$ROOT/build"
 LINK_ROOT="$ROOT"
 LINK_B="$B"
@@ -58,10 +58,49 @@ done
 "$CC" "${FLAGS[@]}" -c "$ROOT/driver/nt351_interlocked.c" -o "$B/interlocked.obj"
 SOURCES=(tables types uacpi utilities interpreter opcodes namespace stdlib
   opregion default_handlers io notify sleep registers resources event mutex osi)
+UACPI_S5_SOURCE="$B/ntpwr_uacpi.c"
+python3 - "$SRC/source/uacpi.c" "$UACPI_S5_SOURCE" <<'PY'
+from pathlib import Path
+import sys
+
+source = Path(sys.argv[1]).read_text()
+start = "    ret = uacpi_initialize_events();\n"
+end = "    g_uacpi_rt_ctx.init_level = UACPI_INIT_LEVEL_NAMESPACE_LOADED;\n"
+begin = source.find(start)
+finish = source.find(end, begin)
+if begin < 0 or finish < 0 or source.find(start, begin + len(start)) >= 0:
+    raise SystemExit("Unsupported uACPI namespace initialization")
+block = source[begin:finish]
+if 'goto out_fatal_error;' not in block:
+    raise SystemExit("Unexpected uACPI event initialization")
+source = source[:begin] + "#ifndef NTPWR_S5_ONLY\n" + block + "#endif\n" + source[finish:]
+Path(sys.argv[2]).write_text(source)
+PY
+UACPI_REGISTER_SOURCE="$B/ntpwr_registers.c"
+python3 - "$SRC/source/registers.c" "$UACPI_REGISTER_SOURCE" <<'PY'
+from pathlib import Path
+import sys
+
+source = Path(sys.argv[1]).read_text()
+marker = "static uacpi_status get_reg(\n"
+if source.count(marker) != 1:
+    raise SystemExit("Unsupported uACPI register mapping")
+source = source.replace(marker, """uacpi_status ntpwr_uacpi_prepare_smi_cmd(void)
+{
+    return ensure_register_mapped(&g_registers[UACPI_REGISTER_SMI_CMD],
+                                  &g_register_mappings[UACPI_REGISTER_SMI_CMD]);
+}
+
+""" + marker)
+Path(sys.argv[2]).write_text(source)
+PY
 UOBJS=()
 for name in "${SOURCES[@]}"; do
-    "$CC" "${FLAGS[@]}" -I "$SRC/include" -I "$SRC/source" \
-        -c "$SRC/source/$name.c" -o "$B/$name.obj"
+    unit="$SRC/source/$name.c"
+    if [[ "$name" == uacpi ]]; then unit="$UACPI_S5_SOURCE"; fi
+    if [[ "$name" == registers ]]; then unit="$UACPI_REGISTER_SOURCE"; fi
+    "$CC" "${FLAGS[@]}" -DNTPWR_S5_ONLY -I "$SRC/include" -I "$SRC/source" \
+        -c "$unit" -o "$B/$name.obj"
     UOBJS+=("$LINK_B/$name.obj")
     printf 'PASS  %s.c\n' "$name"
 done
@@ -117,6 +156,8 @@ EXPORTS
     GetSystemDirectoryA
     CopyFileA
     DeleteFileA
+    GetFileAttributesA
+    SetFileAttributesA
     Sleep
     GetModuleHandleA
     GetVersionExA
@@ -129,6 +170,7 @@ EXPORTS
     HeapAlloc
     HeapFree
     OpenProcess
+    DuplicateHandle
     ReadProcessMemory
     WriteProcessMemory
     CreateEventA
@@ -217,9 +259,11 @@ for unit in ntpwr_remap ntpwr_service; do
 done
 user_imports=(GetStdHandle:4 WriteFile:20 FreeConsole:0 GetLastError:0 ExitProcess:4
   GetCommandLineA:0 GetModuleFileNameA:12 GetSystemDirectoryA:8
-  CopyFileA:12 DeleteFileA:4 Sleep:4 GetModuleHandleA:4 GetVersionExA:4
+  CopyFileA:12 DeleteFileA:4 GetFileAttributesA:4 SetFileAttributesA:8
+  Sleep:4 GetModuleHandleA:4 GetVersionExA:4
   CloseHandle:4 CreateFileA:28 DeviceIoControl:32 GetCurrentProcess:0
   GetProcAddress:8 GetProcessHeap:0 HeapAlloc:12 HeapFree:12 OpenProcess:12
+  DuplicateHandle:28
   ReadProcessMemory:20 WriteProcessMemory:20 CreateEventA:16 ResetEvent:4
   SetEvent:4 WaitForSingleObject:8 SetLastError:4 lstrcmpiA:8 lstrlenA:4
   DialogBoxIndirectParamA:20 EndDialog:8 SetDlgItemTextA:12 GetDlgItem:8 EnableWindow:8 MessageBoxA:16
