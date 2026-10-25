@@ -44,6 +44,8 @@ if [[ "${OSTYPE:-}" == msys* || -n "${MSYSTEM:-}" ]]; then
     LINK_ROOT="$(cygpath -m "$ROOT")"
     LINK_B="$(cygpath -m "$B")"
 fi
+python3 "$ROOT/tools/version_resource.py" "$ROOT/include/ntpwr_version.h" "$B/ntpwr-sys.res" sys
+python3 "$ROOT/tools/version_resource.py" "$ROOT/include/ntpwr_version.h" "$B/ntpwr-exe.res" exe
 ADAPTER=(nt351_early nt351_sync_timing nt351_io nt351_irq_spin
          nt351_pci nt351_work nt351_firmware_irq nt351_mmio_ro)
 "$CC" "${FLAGS[@]}" -c "$ROOT/runtime/nt351_runtime.c" -o "$B/runtime.obj"
@@ -249,7 +251,7 @@ MSYS2_ARG_CONV_EXCL="*" "$LD" /nologo /dll /driver /machine:x86 /subsystem:nativ
    /osversion:3.51 /entry:DriverEntry /nodefaultlib /dynamicbase:no \
    /nxcompat:no /safeseh:no /base:0x10000 /release \
    "/out:$LINK_ROOT/DIST/NTPWR.SYS" "$LINK_B/ntpwr_drv.obj" "$LINK_B/runtime.obj" \
-   "${AOBJS[@]}" "$LINK_B/ntpwr_hook.obj" "$LINK_B/interlocked.obj" "${UOBJS[@]}" "$LINK_B/NTOSKRNL.stub.lib" "$LINK_B/HAL.stub.lib" "${aliases[@]}"
+   "${AOBJS[@]}" "$LINK_B/ntpwr_hook.obj" "$LINK_B/interlocked.obj" "${UOBJS[@]}" "$LINK_B/ntpwr-sys.res" "$LINK_B/NTOSKRNL.stub.lib" "$LINK_B/HAL.stub.lib" "${aliases[@]}"
 
 "$CC" --target=i386-pc-windows-msvc -march=i486 -mno-sse -mno-sse2 \
   -ffreestanding -fno-builtin -fno-stack-protector -O1 -Wall -Wextra -Werror \
@@ -283,7 +285,7 @@ done
 MSYS2_ARG_CONV_EXCL="*" "$LD" /nologo /machine:x86 /subsystem:console,3.51 /osversion:3.51 \
   /entry:Entry /nodefaultlib /dynamicbase:no /nxcompat:no /safeseh:no \
   "/out:$LINK_ROOT/DIST/NTPWR.EXE" "$LINK_B/ntpwr_cli.obj" \
-  "$LINK_B/ntpwr_remap.obj" "$LINK_B/ntpwr_service.obj" "$LINK_B/runtime.obj" \
+  "$LINK_B/ntpwr_remap.obj" "$LINK_B/ntpwr_service.obj" "$LINK_B/runtime.obj" "$LINK_B/ntpwr-exe.res" \
   "$LINK_B/KERNEL32.stub.lib" "$LINK_B/ADVAPI32.stub.lib" "$LINK_B/USER32.stub.lib" "${user_aliases[@]}"
 python3 "$ROOT/tools/check_pe.py" "$ROOT/DIST/NTPWR.SYS" "$ROOT/DIST/NTPWR.EXE"
 echo "Build complete: DIST/NTPWR.SYS DIST/NTPWR.EXE"
