@@ -430,10 +430,48 @@ static BOOL WaitAgentState(SC_HANDLE service, DWORD expected) {
     }
     return FALSE;
 }
-static BOOL AgentInstall(SC_HANDLE manager) {
-    char path[MAX_PATH],image[MAX_PATH+32],src[MAX_PATH];SC_HANDLE service;
+static BOOL StopAgent(SC_HANDLE service) {
+    struct SERVICE_STATUS status;
+    unsigned i;
+    for(i=0;i<60;++i){
+        if(!QueryServiceStatus(service,&status)){
+            Error("QueryServiceStatus(NTPWRAgent)");return FALSE;
+        }
+        if(status.dwCurrentState==SERVICE_STOPPED)return TRUE;
+        if(status.dwCurrentState==SERVICE_START_PENDING ||
+           status.dwCurrentState==SERVICE_STOP_PENDING){
+            Sleep(500);continue;
+        }
+        if(!(status.dwControlsAccepted&SERVICE_ACCEPT_STOP)){
+            Fail("NTPWRAgent does not accept stop");return FALSE;
+        }
+        if(!ControlService(service,SERVICE_CONTROL_STOP,&status)){
+            DWORD error=GetLastError();
+            if(error!=ERROR_SERVICE_CANNOT_ACCEPT_CTRL &&
+               error!=ERROR_SERVICE_NOT_ACTIVE){
+                Error("Stop(NTPWRAgent)");return FALSE;
+            }
+        }
+        Sleep(500);
+    }
+    Fail("NTPWRAgent stop timed out");
+    return FALSE;
+}
+static BOOL AgentInstall(SC_HANDLE manager, BOOL *rollbackSafe) {
+    char path[MAX_PATH],image[MAX_PATH+32],src[MAX_PATH];
+    SC_HANDLE service,existing;
     DWORD n=GetSystemDirectoryA(path,MAX_PATH);
     DWORD len=GetModuleFileNameA(NULL,src,MAX_PATH);
+    *rollbackSafe=TRUE;
+    existing=OpenServiceA(manager,"NTPWRAgent",SERVICE_QUERY_STATUS);
+    if(existing){
+        CloseServiceHandle(existing);
+        Fail("NTPWRAgent already installed");
+        return FALSE;
+    }
+    if(GetLastError()!=ERROR_SERVICE_DOES_NOT_EXIST){
+        Error("OpenService(NTPWRAgent)");return FALSE;
+    }
     if(!n || n>=MAX_PATH || !len || len>=MAX_PATH)return FALSE;
     if(!Append(path,MAX_PATH,"\\NTPWR.EXE"))return FALSE;
     if(!CopyFileA(src,path,FALSE)){
@@ -441,34 +479,45 @@ static BOOL AgentInstall(SC_HANDLE manager) {
     }
     image[0]='"';image[1]=0;
     if(!Append(image,sizeof(image),path) ||
-       !Append(image,sizeof(image),"\" --service"))return FALSE;
+       !Append(image,sizeof(image),"\" --service")){
+        DeleteFileA(path);return FALSE;
+    }
     service=CreateServiceA(manager,"NTPWRAgent","NT Power Management Agent",
         SERVICE_ALL_ACCESS,SERVICE_WIN32_OWN_PROCESS,SERVICE_AUTO_START,
         SERVICE_ERROR_NORMAL,image,NULL,NULL,NULL,NULL,NULL);
-    if(!service){Error("CreateService(NTPWRAgent)");return FALSE;}
+    if(!service){
+        Error("CreateService(NTPWRAgent)");
+        DeleteFileA(path);return FALSE;
+    }
     if(!StartServiceA(service,0,NULL)){
         Error("StartService(NTPWRAgent)");
-        DeleteService(service);CloseServiceHandle(service);return FALSE;
+        goto rollback;
     }
-    if(!WaitAgentState(service,SERVICE_RUNNING)) {
+    if(!WaitAgentState(service,SERVICE_RUNNING)){
         Fail("NTPWRAgent failed to start");
-        CloseServiceHandle(service);return FALSE;
+        goto rollback;
     }
     CloseServiceHandle(service);
     return TRUE;
+rollback:
+    if(!StopAgent(service)){
+        *rollbackSafe=FALSE;
+        Fail("NTPWRAgent rollback incomplete");
+    }else if(!DeleteService(service)){
+        *rollbackSafe=FALSE;
+        Error("DeleteService(NTPWRAgent)");
+    }
+    CloseServiceHandle(service);
+    if(*rollbackSafe && !DeleteFileA(path))
+        Print("Warning: NTPWR.EXE cleanup pending.\r\n");
+    return FALSE;
 }
 static BOOL AgentRemove(SC_HANDLE manager) {
     SC_HANDLE service=OpenServiceA(manager,"NTPWRAgent",SERVICE_STOP|
                                   SERVICE_QUERY_STATUS|DELETE_ACCESS);
-    struct SERVICE_STATUS status;
     if(!service)return GetLastError()==ERROR_SERVICE_DOES_NOT_EXIST;
-    if(!QueryServiceStatus(service,&status)){
+    if(!StopAgent(service)){
         CloseServiceHandle(service);return FALSE;
-    }
-    if(status.dwCurrentState!=SERVICE_STOPPED){
-        if(!ControlService(service,SERVICE_CONTROL_STOP,&status) || !WaitAgentState(service,SERVICE_STOPPED)){
-            Error("Stop(NTPWRAgent)");CloseServiceHandle(service);return FALSE;
-        }
     }
     if(!DeleteService(service)){
         Error("DeleteService(NTPWRAgent)");CloseServiceHandle(service);return FALSE;
@@ -492,15 +541,19 @@ static BOOL EnableAutostart(SC_HANDLE manager) {
 }
 static BOOL InstallFull(SC_HANDLE manager) {
     SC_HANDLE conflict=OpenServiceA(manager,"QEMUPWR",SERVICE_QUERY_STATUS);
-    BOOL ok;
+    BOOL ok,agentRollbackSafe=TRUE;
     if(conflict){CloseServiceHandle(conflict);Fail("Remove QEMUPWR before installing NTPWR");return FALSE;}
     if(!Install(manager))return FALSE;
     if(!Start(manager))goto rollback;
     if(!HookArm())goto rollback;
-    if(!AgentInstall(manager)){HookDisarm();goto rollback;}
+    if(!AgentInstall(manager,&agentRollbackSafe)){
+        if(!agentRollbackSafe || !HookDisarm())return FALSE;
+        goto rollback;
+    }
     if(!EnableAutostart(manager)){
         Fail("Failed to enable automatic startup");
-        AgentRemove(manager);HookDisarm();goto rollback;
+        if(!AgentRemove(manager) || !HookDisarm())return FALSE;
+        goto rollback;
     }
     return TRUE;
 rollback:
