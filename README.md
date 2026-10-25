@@ -76,7 +76,7 @@ NTPWR.EXE STATUS
 NTPWR.EXE REMOVE
 ```
 
-`WINLOGON` inspects the active Winlogon shutdown patch site without modifying it. Early NT 3.51 Winlogon builds use an alternate verified instruction layout. `RESULT`, `START` and `STOP` are also available for diagnostics. A running driver with an active kernel hook cannot be unloaded normally. If command-line output is unavailable, inspect `NTPWR-CLI.LOG` in the current directory.
+`WINLOGON` inspects the active Winlogon shutdown patch site without modifying it. `RESULT`, `START` and `STOP` are also available for diagnostics. A running driver with an active kernel hook cannot be unloaded normally. If command-line output is unavailable, inspect `NTPWR-CLI.LOG` in the current directory.
 
 Use a VM snapshot when evaluating an untested operating system or firmware configuration.
 
