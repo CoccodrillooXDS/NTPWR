@@ -465,7 +465,11 @@ static BOOL HookArm(void) {
     if(KernelHook(NTPWR_IOCTL_QUERY,&report) &&
        report.Signature==NTPWR_SIGNATURE && report.Size==sizeof(report)){
         if(!report.AcpiReady){
-            Fail("ACPI S5 unavailable; APM backend not implemented");
+            PROBE probe;
+            if(ReadProbe(&probe) && probe.stage==1 && probe.init==6UL)
+                Fail("ACPI tables not found; APM not implemented");
+            else
+                Fail("ACPI S5 unavailable; APM not implemented");
             if(report.Result!=NTPWR_OK){
                 Print("NTPWR: Kernel hook ");Print(HookStatus(report.Result));Print("\r\n");
             }
