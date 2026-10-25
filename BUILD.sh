@@ -96,11 +96,54 @@ source = source.replace(marker, """uacpi_status ntpwr_uacpi_prepare_smi_cmd(void
 """ + marker)
 Path(sys.argv[2]).write_text(source)
 PY
+UACPI_SLEEP_SOURCE="$B/ntpwr_sleep.c"
+python3 - "$SRC/source/sleep.c" "$UACPI_SLEEP_SOURCE" <<'PY'
+from pathlib import Path
+import sys
+
+source = Path(sys.argv[1]).read_text()
+header = "#include <uacpi/platform/arch_helpers.h>\n"
+start = source.find("uacpi_status uacpi_prepare_for_sleep_state(")
+end = source.find("static uacpi_u8 make_hw_reduced_sleep_control(", start)
+if source.count(header) != 1 or start < 0 or end < 0:
+    raise SystemExit("Unsupported uACPI S5 preparation source")
+section = source[start:end]
+original_type = """    if (ret != UACPI_STATUS_OK)
+        return ret;
+
+    ret = get_slp_type_for_state(
+        0,"""
+traced_type = """    if (ret != UACPI_STATUS_OK) {
+        if (state == UACPI_SLEEP_STATE_S5)
+            NtpwrTraceAcpiStatus("S5 type evaluation", (unsigned long)ret);
+        return ret;
+    }
+
+    ret = get_slp_type_for_state(
+        0,"""
+original_pts = """    ret = eval_pts(state);
+    if (uacpi_unlikely_error(ret))
+        return ret;"""
+traced_pts = """    ret = eval_pts(state);
+    if (uacpi_unlikely_error(ret)) {
+        if (state == UACPI_SLEEP_STATE_S5)
+            NtpwrTraceAcpiStatus("S5 _PTS evaluation", (unsigned long)ret);
+        return ret;
+    }"""
+if section.count(original_type) != 1 or section.count(original_pts) != 1:
+    raise SystemExit("Unsupported uACPI S5 preparation layout")
+section = section.replace(original_type, traced_type).replace(original_pts, traced_pts)
+source = source[:start] + section + source[end:]
+source = source.replace(header, header +
+    "\nextern void __cdecl NtpwrTraceAcpiStatus(const char *, unsigned long);\n")
+Path(sys.argv[2]).write_text(source)
+PY
 UOBJS=()
 for name in "${SOURCES[@]}"; do
     unit="$SRC/source/$name.c"
     if [[ "$name" == uacpi ]]; then unit="$UACPI_S5_SOURCE"; fi
     if [[ "$name" == registers ]]; then unit="$UACPI_REGISTER_SOURCE"; fi
+    if [[ "$name" == sleep ]]; then unit="$UACPI_SLEEP_SOURCE"; fi
     "$CC" "${FLAGS[@]}" -DNTPWR_S5_ONLY -I "$SRC/include" -I "$SRC/source" \
         -c "$unit" -o "$B/$name.obj"
     UOBJS+=("$LINK_B/$name.obj")
