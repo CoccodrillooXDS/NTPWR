@@ -384,9 +384,19 @@ static BOOL CheckImage(HANDLE Process, DWORD Base, DWORD PatchRva,
     ImageSize = Dword(Nt, 24 + 56);
     if (Sections == 0 || Sections > 32UL || OptSize < 0xE0UL ||
         OptSize > 0x200UL || ImageSize < 0x10000UL ||
-        ImageSize > 0x400000UL || PatchRva > ImageSize - 5UL ||
-        !ExecutablePatch(Process, Base, PeOffset, OptSize, Sections, PatchRva))
+        ImageSize > 0x400000UL)
         return FALSE;
+    if (PatchRva > ImageSize - 5UL ||
+        !ExecutablePatch(Process, Base, PeOffset, OptSize, Sections, PatchRva)) {
+        if (g_VisibleStatus) {
+            Out("Winlogon: "); Out(Name);
+            Out("\r\nImage base: "); Hex(Base);
+            Out("\r\nExpected patch RVA unavailable\r\n");
+            ReportWinlogonCandidates(Process, Base, PeOffset, OptSize,
+                                     Sections, ImageSize, Original);
+        }
+        return FALSE;
+    }
     Known = Dword(Nt, 8) == Timestamp &&
             Dword(Nt, 24 + 64) == Checksum && ImageSize == Size;
     Patch = Base + PatchRva;
