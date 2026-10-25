@@ -120,6 +120,8 @@ typedef struct PROBE {
     DWORD backend;
     BOOL hook_active,hook_checked,hook_verified;
     DWORD hook_result;
+    DWORD kernel_timestamp,kernel_checksum,kernel_image_size;
+    DWORD branch_matches,branch_address,iat_address,hal_target,hal_import;
 } PROBE;
 
 IMPORT HANDLE WINAPI GetStdHandle(DWORD);
@@ -345,7 +347,7 @@ static LPCSTR HookStatus(DWORD result) {
     case NTPWR_AMBIGUOUS_BRANCH:return "Ambiguous shutdown path";
     case NTPWR_BAD_IAT:
     case NTPWR_BAD_HAL_TARGET:return "HAL import not verified";
-    case NTPWR_NOT_VERIFIED:return "Kernel profile not verified";
+    case NTPWR_NOT_VERIFIED:return "HAL import not verified";
     case NTPWR_ALREADY_MODIFIED:return "HAL import already modified";
     case NTPWR_NO_ACPI_SHUTDOWN:return "ACPI S5 unavailable";
     default:return "Not supported";
@@ -467,6 +469,14 @@ static BOOL QueryHook(PROBE *p) {
     p->hook_active=(report.Flags & NTPWR_FLAG_ARMED)!=0;
     p->hook_result=report.Result;
     p->hook_verified=(report.Flags&NTPWR_FLAG_KNOWN)!=0;
+    p->kernel_timestamp=report.KernelTimestamp;
+    p->kernel_checksum=report.KernelChecksum;
+    p->kernel_image_size=report.KernelImageSize;
+    p->branch_matches=report.BranchMatches;
+    p->branch_address=report.BranchAddress;
+    p->iat_address=report.IatAddress;
+    p->hal_target=report.HalTarget;
+    p->hal_import=report.HalImportFromTable;
     p->hook_checked=TRUE;
     return TRUE;
 }
@@ -708,6 +718,16 @@ static void PrintProbe(const PROBE *p) {
         Print(p->hook_result==NTPWR_OK&&!p->hook_verified?
               "Compatible (unverified)":HookStatus(p->hook_result));
         Print("\r\n");
+        if(p->hook_result==NTPWR_NOT_VERIFIED){
+            Print("NTPWR: Kernel timestamp=");PrintHex(p->kernel_timestamp);
+            Print(" checksum=");PrintHex(p->kernel_checksum);
+            Print(" size=");PrintHex(p->kernel_image_size);Print("\r\n");
+            Print("NTPWR: Shutdown branch=");PrintHex(p->branch_address);
+            Print(" matches=");PrintDecimal(p->branch_matches);
+            Print(" IAT=");PrintHex(p->iat_address);Print("\r\n");
+            Print("NTPWR: HAL target=");PrintHex(p->hal_target);
+            Print(" import=");PrintHex(p->hal_import);Print("\r\n");
+        }
     }
 }
 static BOOL Run(LPCSTR action) {
