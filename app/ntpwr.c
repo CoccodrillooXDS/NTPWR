@@ -1087,10 +1087,10 @@ static const void *MainTemplate(void){
     Control(SS_LEFT,17,101,69,12,25,0x82,"Power-off:");
     Control(SS_LEFT,91,101,165,12,IDC_POWER,0x82,"");
     Control(BS_GROUPBOX,8,133,258,49,40,0x80,"Serial diagnostics");
-    Control(SS_LEFT,17,157,65,12,41,0x82,"Output:");
+    Control(SS_LEFT,17,154,65,12,41,0x82,"Output:");
     Control(CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP,
-            91,154,98,90,IDC_SERIAL_PORT,0x85,"");
-    Control(BS_PUSHBUTTON|WS_TABSTOP,199,155,58,17,
+            91,151,98,90,IDC_SERIAL_PORT,0x85,"");
+    Control(BS_PUSHBUTTON|WS_TABSTOP,199,152,58,17,
             IDC_SERIAL_APPLY,0x80,"Apply");
     Control(BS_PUSHBUTTON|WS_TABSTOP,8,194,58,17,IDC_INSTALL,0x80,"Install");
     Control(BS_PUSHBUTTON|WS_TABSTOP,74,194,65,17,IDC_REMOVE,0x80,"Uninstall");
