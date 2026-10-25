@@ -497,6 +497,8 @@ static BOOL CheckImage(HANDLE Process, DWORD Base, DWORD PatchRva,
     Out("\r\nPE timestamp: "); Hex(Dword(Nt, 8));
     Out("\r\nPE checksum: "); Hex(Dword(Nt, 24 + 64));
     Out("\r\nImage profile: "); Out(Known ? "verified" : "structural (unverified)");
+    Out("\r\nShutdown layout: "); Out(Rtm ? "NT 3.51 early" :
+                                (Nt4 ? "NT 4.0" : "NT 3.51 SP5-compatible"));
     Out("\r\nPatch address: "); Hex(Patch);
     if (!Read(Process, Patch, Site, PatchLength)) {
         Out("\r\nReadProcessMemory failed: "); Hex(GetLastError());
