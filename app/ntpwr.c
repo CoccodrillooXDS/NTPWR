@@ -476,8 +476,7 @@ static BOOL HookArm(void) {
             return FALSE;
         }
         if(report.Result!=NTPWR_OK){
-            Fail("Kernel shutdown hook unavailable");
-            Print("NTPWR: ");Print(HookStatus(report.Result));Print("\r\n");
+            Fail(HookStatus(report.Result));
             return FALSE;
         }
     }
