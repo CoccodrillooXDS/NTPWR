@@ -14,6 +14,9 @@ extern void __stdcall NtpwrProbeCleanup(void);
 #define PV_NT351_STAMP 0x321A03D2UL
 #define PV_NT351_CHECK 0x000D3B29UL
 #define PV_NT351_SIZE  0x000BCD00UL
+#define PV_NT351_RTM_STAMP 0x2FC653BCUL
+#define PV_NT351_RTM_CHECK 0x000CEC3EUL
+#define PV_NT351_RTM_SIZE  0x000BBB80UL
 #define PV_NT4_STAMP   0x405977CDUL
 #define PV_NT4_CHECK   0x000EACFFUL
 #define PV_NT4_RUNTIME_SIZE_A 0x000E5000UL
@@ -339,6 +342,9 @@ static VOID PvScan(VOID)
     if ((g_Report.KernelTimestamp == PV_NT351_STAMP &&
          g_Report.KernelChecksum == PV_NT351_CHECK &&
          ImageSize == PV_NT351_SIZE) ||
+        (g_Report.KernelTimestamp == PV_NT351_RTM_STAMP &&
+         g_Report.KernelChecksum == PV_NT351_RTM_CHECK &&
+         ImageSize == PV_NT351_RTM_SIZE) ||
         (g_Report.KernelTimestamp == PV_NT4_STAMP &&
          g_Report.KernelChecksum == PV_NT4_CHECK &&
          (ImageSize == PV_NT4_RUNTIME_SIZE_A ||

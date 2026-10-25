@@ -438,7 +438,7 @@ static BOOL RefreshInstalledVersion(BOOL installed) {
 
 static LPCSTR HookStatus(DWORD result) {
     switch(result){
-    case NTPWR_OK:return "Compatible";
+    case NTPWR_OK:return "Compatible (verified)";
     case NTPWR_BAD_KERNEL_BASE:
     case NTPWR_BAD_PE:
     case NTPWR_BAD_IMAGE:return "Unsupported kernel image";
@@ -1087,10 +1087,10 @@ static const void *MainTemplate(void){
     Control(SS_LEFT,17,101,69,12,25,0x82,"Power-off:");
     Control(SS_LEFT,91,101,165,12,IDC_POWER,0x82,"");
     Control(BS_GROUPBOX,8,133,258,49,40,0x80,"Serial diagnostics");
-    Control(SS_LEFT,17,151,65,12,41,0x82,"Output:");
+    Control(SS_LEFT,17,157,65,12,41,0x82,"Output:");
     Control(CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP,
-            91,148,98,90,IDC_SERIAL_PORT,0x85,"");
-    Control(BS_PUSHBUTTON|WS_TABSTOP,199,149,58,17,
+            91,154,98,90,IDC_SERIAL_PORT,0x85,"");
+    Control(BS_PUSHBUTTON|WS_TABSTOP,199,155,58,17,
             IDC_SERIAL_APPLY,0x80,"Apply");
     Control(BS_PUSHBUTTON|WS_TABSTOP,8,194,58,17,IDC_INSTALL,0x80,"Install");
     Control(BS_PUSHBUTTON|WS_TABSTOP,74,194,65,17,IDC_REMOVE,0x80,"Uninstall");
