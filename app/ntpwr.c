@@ -40,6 +40,8 @@ typedef LONG (__stdcall *DLGPROC)(HWND, UINT, WPARAM, LPARAM);
 #define OPEN_EXISTING 3UL
 #define CREATE_ALWAYS 2UL
 #define FILE_ATTRIBUTE_NORMAL 0x80UL
+#define FILE_ATTRIBUTE_READONLY 1UL
+#define INVALID_FILE_ATTRIBUTES 0xFFFFFFFFUL
 #define SERVICE_ERROR_NORMAL 1UL
 #define SC_MANAGER_CREATE_SERVICE 2UL
 #define SC_MANAGER_CONNECT 1UL
@@ -115,7 +117,8 @@ typedef struct PROBE {
     DWORD stage, init, load, ns, eval, count, a, b;
     DWORD error;
     DWORD backend;
-    BOOL hook_active;
+    BOOL hook_active,hook_checked;
+    DWORD hook_result;
 } PROBE;
 
 IMPORT HANDLE WINAPI GetStdHandle(DWORD);
@@ -128,6 +131,8 @@ IMPORT DWORD WINAPI GetModuleFileNameA(HANDLE, LPSTR, DWORD);
 IMPORT DWORD WINAPI GetSystemDirectoryA(LPSTR, DWORD);
 IMPORT BOOL WINAPI CopyFileA(LPCSTR, LPCSTR, BOOL);
 IMPORT BOOL WINAPI DeleteFileA(LPCSTR);
+IMPORT DWORD WINAPI GetFileAttributesA(LPCSTR);
+IMPORT BOOL WINAPI SetFileAttributesA(LPCSTR,DWORD);
 IMPORT void WINAPI Sleep(DWORD);
 IMPORT HANDLE WINAPI GetModuleHandleA(LPCSTR);
 IMPORT BOOL WINAPI GetVersionExA(struct OSVERSIONINFOA *);
@@ -303,18 +308,62 @@ static BOOL ServiceState(SC_HANDLE m,BOOL *installed,BOOL *running) {
     *running=st.dwCurrentState==SERVICE_RUNNING;
     CloseServiceHandle(s);return TRUE;
 }
+static BOOL CopyWritable(LPCSTR source,LPCSTR dest) {
+    DWORD attr=GetFileAttributesA(dest);
+    if(attr!=INVALID_FILE_ATTRIBUTES && (attr&FILE_ATTRIBUTE_READONLY) &&
+       !SetFileAttributesA(dest,attr&~FILE_ATTRIBUTE_READONLY)){
+        Error("SetFileAttributes");return FALSE;
+    }
+    if(!CopyFileA(source,dest,FALSE)){Error("CopyFile");return FALSE;}
+    attr=GetFileAttributesA(dest);
+    if(attr==INVALID_FILE_ATTRIBUTES){Error("GetFileAttributes");return FALSE;}
+    if((attr&FILE_ATTRIBUTE_READONLY) &&
+       !SetFileAttributesA(dest,attr&~FILE_ATTRIBUTE_READONLY)){
+        Error("SetFileAttributes");return FALSE;
+    }
+    return TRUE;
+}
+static BOOL DeleteWritable(LPCSTR path) {
+    DWORD attr=GetFileAttributesA(path);
+    if(attr!=INVALID_FILE_ATTRIBUTES && (attr&FILE_ATTRIBUTE_READONLY) &&
+       !SetFileAttributesA(path,attr&~FILE_ATTRIBUTE_READONLY))return FALSE;
+    return DeleteFileA(path);
+}
+static LPCSTR HookStatus(DWORD result) {
+    switch(result){
+    case NTPWR_OK:return "Compatible";
+    case NTPWR_BAD_KERNEL_BASE:
+    case NTPWR_BAD_PE:
+    case NTPWR_BAD_IMAGE:return "Unsupported kernel image";
+    case NTPWR_NO_TEXT:
+    case NTPWR_NO_BRANCH:return "Shutdown path not found";
+    case NTPWR_AMBIGUOUS_BRANCH:return "Ambiguous shutdown path";
+    case NTPWR_BAD_IAT:
+    case NTPWR_BAD_HAL_TARGET:return "HAL import not verified";
+    case NTPWR_NOT_VERIFIED:return "Kernel profile not verified";
+    case NTPWR_ALREADY_MODIFIED:return "HAL import already modified";
+    case NTPWR_NO_ACPI_SHUTDOWN:return "ACPI S5 unavailable";
+    default:return "Not supported";
+    }
+}
+static LPCSTR AcpiState(const PROBE *p) {
+    if(!p->scanned)return "Not scanned";
+    if(p->stage==1 && p->init==6UL)return "Not detected (no ACPI tables)";
+    if(p->stage!=4)return "Initialization failed";
+    return p->backend?"Ready (S5)":"Detected; S5 unavailable";
+}
 static BOOL Install(SC_HANDLE m) {
     char src[MAX_PATH],dst[MAX_PATH];SC_HANDLE existing,s;
     existing=Service(m);
     if(existing){CloseServiceHandle(existing);Fail("NTPWR already installed. Remove the previous version first.");return FALSE;}
     if(GetLastError()!=ERROR_SERVICE_DOES_NOT_EXIST){Error("OpenService");return FALSE;}
     if(!Paths(src,dst)){Fail("Driver path unavailable");return FALSE;}
-    if(!CopyFileA(src,dst,FALSE)){Error("CopyFile");return FALSE;}
+    if(!CopyWritable(src,dst))return FALSE;
     s=CreateServiceA(m,"NTPWR","NT Power Management Driver",
         SERVICE_START|SERVICE_STOP|SERVICE_QUERY_STATUS|DELETE_ACCESS,
         SERVICE_KERNEL_DRIVER,SERVICE_DEMAND_START,SERVICE_ERROR_NORMAL,
         "\\SystemRoot\\System32\\Drivers\\NTPWR.SYS",NULL,NULL,NULL,NULL,NULL);
-    if(!s){Error("CreateService");DeleteFileA(dst);return FALSE;}
+    if(!s){Error("CreateService");DeleteWritable(dst);return FALSE;}
     CloseServiceHandle(s);Print("Driver installed.\r\n");return TRUE;
 }
 static BOOL Start(SC_HANDLE m) {
@@ -365,7 +414,7 @@ static BOOL Remove(SC_HANDLE m) {
     ok=TRUE;Print("Service removed.\r\n");
 done:
     CloseServiceHandle(s);
-    if(ok&&Paths(src,dst)&&!DeleteFileA(dst)){
+    if(ok&&Paths(src,dst)&&!DeleteWritable(dst)){
         Print("Warning: unable to delete driver file: ");PrintHex(GetLastError());Print("\r\n");
     }
     return ok;
@@ -408,9 +457,26 @@ static BOOL QueryHook(PROBE *p) {
     if(report.Signature!=NTPWR_SIGNATURE || report.Size!=sizeof(report))return FALSE;
     p->backend=report.AcpiReady;
     p->hook_active=(report.Flags & NTPWR_FLAG_ARMED)!=0;
+    p->hook_result=report.Result;p->hook_checked=TRUE;
     return TRUE;
 }
 static BOOL HookArm(void) {
+    NTPWR_REPORT report;
+    if(KernelHook(NTPWR_IOCTL_QUERY,&report) &&
+       report.Signature==NTPWR_SIGNATURE && report.Size==sizeof(report)){
+        if(!report.AcpiReady){
+            Fail("ACPI S5 unavailable; APM backend not implemented");
+            if(report.Result!=NTPWR_OK){
+                Print("NTPWR: Kernel hook ");Print(HookStatus(report.Result));Print("\r\n");
+            }
+            return FALSE;
+        }
+        if(report.Result!=NTPWR_OK){
+            Fail("Kernel shutdown hook unavailable");
+            Print("NTPWR: ");Print(HookStatus(report.Result));Print("\r\n");
+            return FALSE;
+        }
+    }
     if(!KernelHook(NTPWR_IOCTL_ARM,NULL)){
         Error("NTPWR hook arm");return FALSE;
     }
@@ -478,20 +544,18 @@ static BOOL AgentInstall(SC_HANDLE manager, BOOL *rollbackSafe) {
     }
     if(!n || n>=MAX_PATH || !len || len>=MAX_PATH)return FALSE;
     if(!Append(path,MAX_PATH,"\\NTPWR.EXE"))return FALSE;
-    if(!CopyFileA(src,path,FALSE)){
-        Error("CopyFile(NTPWR.EXE)");return FALSE;
-    }
+    if(!CopyWritable(src,path))return FALSE;
     image[0]='"';image[1]=0;
     if(!Append(image,sizeof(image),path) ||
        !Append(image,sizeof(image),"\" --service")){
-        DeleteFileA(path);return FALSE;
+        DeleteWritable(path);return FALSE;
     }
     service=CreateServiceA(manager,"NTPWRAgent","NT Power Management Agent",
         SERVICE_ALL_ACCESS,SERVICE_WIN32_OWN_PROCESS,SERVICE_AUTO_START,
         SERVICE_ERROR_NORMAL,image,NULL,NULL,NULL,NULL,NULL);
     if(!service){
         Error("CreateService(NTPWRAgent)");
-        DeleteFileA(path);return FALSE;
+        DeleteWritable(path);return FALSE;
     }
     if(!StartServiceA(service,0,NULL)){
         Error("StartService(NTPWRAgent)");
@@ -512,7 +576,7 @@ rollback:
         Error("DeleteService(NTPWRAgent)");
     }
     CloseServiceHandle(service);
-    if(*rollbackSafe && !DeleteFileA(path))
+    if(*rollbackSafe && !DeleteWritable(path))
         Print("Warning: NTPWR.EXE cleanup pending.\r\n");
     return FALSE;
 }
@@ -578,7 +642,7 @@ static BOOL RemoveFull(SC_HANDLE manager) {
     {
         char dest[MAX_PATH];DWORD n=GetSystemDirectoryA(dest,MAX_PATH);
         if(n && n<MAX_PATH && Append(dest,MAX_PATH,"\\NTPWR.EXE"))
-            if(!DeleteFileA(dest))Print("Warning: NTPWR.EXE cleanup pending.\r\n");
+            if(!DeleteWritable(dest))Print("Warning: NTPWR.EXE cleanup pending.\r\n");
     }
     return TRUE;
 }
@@ -586,6 +650,7 @@ static BOOL Scan(SC_HANDLE m,PROBE *p) {
     BOOL was_installed=FALSE,was_running=FALSE;
     BOOL temporary=FALSE,started=FALSE,ok=FALSE;
     p->scanned=FALSE;p->error=0;p->backend=0;p->hook_active=FALSE;
+    p->hook_checked=FALSE;p->hook_result=0;
     if(!ServiceState(m,&was_installed,&was_running))return FALSE;
     p->installed=was_installed;p->running=was_running;
     if(!was_installed){
@@ -611,6 +676,7 @@ cleanup:
 static void PrintProbe(const PROBE *p) {
     Print("NTPWR: ACPI ");
     if(!p->scanned)Print("not scanned\r\n");
+    else if(p->stage==1 && p->init==6UL)Print("not detected (ACPI tables unavailable)\r\n");
     else if(p->stage==4){
         Print("detected; AML ready; S5 package=");PrintDecimal(p->count);
         Print(" slp_typa=");PrintDecimal(p->a);
@@ -622,8 +688,11 @@ static void PrintProbe(const PROBE *p) {
         Print(" namespace=");PrintHex(p->ns);
         Print(" eval=");PrintHex(p->eval);Print("\r\n");
     }
-    Print("NTPWR: APM not implemented\r\n");
+    Print("NTPWR: APM not implemented (not probed)\r\n");
     Print("NTPWR: ACPI S5 ");Print(p->backend?"registers mapped\r\n":"not ready\r\n");
+    if(p->hook_checked){
+        Print("NTPWR: Kernel hook ");Print(HookStatus(p->hook_result));Print("\r\n");
+    }
 }
 static BOOL Run(LPCSTR action) {
     SC_HANDLE m=Manager();BOOL ok=FALSE;
@@ -711,10 +780,10 @@ static const void *InfoTemplate(void){
 static void Text(HWND wnd,int id,LPCSTR val){SetDlgItemTextA(wnd,id,val);}
 static void UpdateMain(HWND wnd){
     Text(wnd,IDC_DRIVER,g_probe.installed?(g_probe.running?"Running":"Installed (stopped)"):"Not installed");
-    Text(wnd,IDC_ACPI,!g_probe.scanned?"Not scanned":g_probe.stage==4?"Detected, AML initialized":"Scan incomplete");
+    Text(wnd,IDC_ACPI,AcpiState(&g_probe));
     Text(wnd,IDC_APM,"Not implemented");
     Text(wnd,IDC_METHOD,g_probe.backend?"ACPI S5":"None");
-    Text(wnd,IDC_POWER,g_probe.hook_active?"Enabled":"Disabled");
+    Text(wnd,IDC_POWER,g_probe.hook_active?"Enabled":g_probe.backend?"Disabled":"Unavailable");
     EnableWindow(GetDlgItem(wnd,IDC_INSTALL),!g_probe.installed);
     EnableWindow(GetDlgItem(wnd,IDC_REMOVE),g_probe.installed);
 }
@@ -730,7 +799,7 @@ static void MakeVersion(char *text){
 static void UpdateInfo(HWND wnd){
     char os[100],s[100],a[12],b[12],count[12];
     MakeVersion(os);Text(wnd,IDC_OS,os);
-    Text(wnd,IDC_ACPI,!g_probe.scanned?"Not scanned":g_probe.stage==4?"Detected":"Probe incomplete");
+    Text(wnd,IDC_ACPI,AcpiState(&g_probe));
     if(!g_probe.scanned){
         Text(wnd,IDC_INIT,"Unavailable");Text(wnd,IDC_LOAD,"Unavailable");
         Text(wnd,IDC_S5,"Unavailable");
@@ -747,8 +816,8 @@ static void UpdateInfo(HWND wnd){
     Text(wnd,IDC_APMDETAIL,"Not implemented");
     if(g_probe.scanned){HexToText(g_probe.ns,s);Text(wnd,IDC_NAMESPACE,s);}
     else Text(wnd,IDC_NAMESPACE,"Unavailable");
-    Text(wnd,IDC_BACKEND,g_probe.backend?"ACPI S5 registers mapped":"Unsupported");
-    Text(wnd,IDC_HOOK,g_probe.hook_active?"Active":"Inactive");
+    Text(wnd,IDC_BACKEND,g_probe.backend?"ACPI S5 registers mapped":"No supported backend");
+    Text(wnd,IDC_HOOK,!g_probe.hook_checked?"Not scanned":g_probe.hook_active?"Active":HookStatus(g_probe.hook_result));
 }
 static BOOL Refresh(void){
     SC_HANDLE m=Manager();BOOL ok;
