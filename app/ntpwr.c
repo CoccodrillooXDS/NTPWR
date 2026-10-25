@@ -413,13 +413,16 @@ static BOOL Remove(SC_HANDLE m) {
             Error("ControlService");goto done;
         }
         if(!WaitStopped(s)){Fail("Driver did not stop");goto done;}
+        Print("Driver stopped.\r\n");
     }
     if(!DeleteService(s)){Error("DeleteService");goto done;}
-    ok=TRUE;Print("Service removed.\r\n");
+    ok=TRUE;Print("Driver service removed.\r\n");
 done:
     CloseServiceHandle(s);
-    if(ok&&Paths(src,dst)&&!DeleteWritable(dst)){
-        Print("Warning: unable to delete driver file: ");PrintHex(GetLastError());Print("\r\n");
+    if(ok&&Paths(src,dst)){
+        if(!DeleteWritable(dst)){
+            Print("Warning: unable to delete driver file: ");PrintHex(GetLastError());Print("\r\n");
+        }else Print("Driver file removed.\r\n");
     }
     return ok;
 }
@@ -477,7 +480,7 @@ static BOOL HookArm(void) {
             else
                 Fail("ACPI S5 unavailable; APM not implemented");
             if(report.Result!=NTPWR_OK){
-                Print("NTPWR: Kernel hook ");Print(HookStatus(report.Result));Print("\r\n");
+                Print("NTPWR: ");Print(HookStatus(report.Result));Print("\r\n");
             }
             return FALSE;
         }
@@ -701,7 +704,7 @@ static void PrintProbe(const PROBE *p) {
     Print("NTPWR: APM not implemented (not probed)\r\n");
     Print("NTPWR: ACPI S5 ");Print(p->backend?"registers mapped\r\n":"not ready\r\n");
     if(p->hook_checked){
-        Print("NTPWR: Kernel hook ");Print(HookStatus(p->hook_result));Print("\r\n");
+        Print("NTPWR: Hook: ");Print(HookStatus(p->hook_result));Print("\r\n");
     }
 }
 static BOOL Run(LPCSTR action) {
