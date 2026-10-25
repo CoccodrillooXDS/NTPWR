@@ -634,6 +634,10 @@ static BOOL InstallFull(SC_HANDLE manager) {
     SC_HANDLE conflict=OpenServiceA(manager,"QEMUPWR",SERVICE_QUERY_STATUS);
     BOOL ok,agentRollbackSafe=TRUE;
     if(conflict){CloseServiceHandle(conflict);Fail("Remove QEMUPWR before installing NTPWR");return FALSE;}
+    if(!NtpwrRemapAction("VERIFY")){
+        Fail("Winlogon shutdown path not verified");
+        return FALSE;
+    }
     if(!Install(manager))return FALSE;
     if(!Start(manager))goto rollback;
     if(!HookArm())goto rollback;
@@ -919,10 +923,14 @@ void __cdecl Entry(void){
         if(r==-1){Error("DialogBoxIndirectParam");ExitProcess(1);}
         ExitProcess(0);
     }
+    if(Equals(arg,"WINLOGON")){
+        ok=NtpwrRemapAction("STATUS");
+        CliExit(ok?0:1);
+    }
     if(!Equals(arg,"INSTALL")&&!Equals(arg,"START")&&!Equals(arg,"STOP")&&
        !Equals(arg,"REMOVE")&&!Equals(arg,"STATUS")&&!Equals(arg,"SCAN")&&
        !Equals(arg,"INFO")&&!Equals(arg,"RESULT")){
-        Print("Usage: NTPWR [SCAN|INFO|INSTALL|START|STATUS|STOP|REMOVE]\r\n");
+        Print("Usage: NTPWR [SCAN|INFO|WINLOGON|INSTALL|START|STATUS|STOP|REMOVE]\r\n");
         CliExit(2);
     }
     ResetFailure();

@@ -68,6 +68,7 @@ static FLUSH_ICACHE g_Flush = NULL;
 static LPVOID g_NtDeviceIoControlFile = NULL;
 static NT_QUERY_INFORMATION_PROCESS g_QueryProcess = NULL;
 static BOOL g_Nt4 = FALSE;
+static BOOL g_VisibleStatus = FALSE;
 
 static void Out(const char *String)
 {
@@ -310,6 +311,43 @@ static BOOL ExecutablePatch(HANDLE Process, DWORD Base, DWORD PeOffset,
     return FALSE;
 }
 
+static VOID ReportWinlogonCandidates(HANDLE Process, DWORD Base,
+                                    DWORD PeOffset, DWORD OptSize,
+                                    DWORD SectionCount, DWORD ImageSize,
+                                    const BYTE *Pattern)
+{
+    BYTE Header[40], Bytes[4100], Context[32];
+    DWORD S, Rva, Size, Offset, N, I, Count = 0;
+    for (S = 0; S < SectionCount; ++S) {
+        if (!Read(Process, Base + PeOffset + 24UL + OptSize + S * 40UL,
+                  Header, sizeof(Header))) continue;
+        if ((Dword(Header, 36) & 0x20000020UL) != 0x20000020UL) continue;
+        Rva = Dword(Header, 12);
+        Size = Dword(Header, 8);
+        if (Size < 5UL || Rva >= ImageSize || Size > ImageSize - Rva)
+            continue;
+        for (Offset = 0; Offset + 5UL <= Size; Offset += 4096UL) {
+            N = Size - Offset;
+            if (N > sizeof(Bytes)) N = sizeof(Bytes);
+            if (!Read(Process, Base + Rva + Offset, Bytes, N)) continue;
+            for (I = 0; I < 4096UL && I + 5UL <= N; ++I) {
+                if (!SameBytes(Bytes + I, Pattern, 5UL)) continue;
+                ++Count;
+                if (Count > 8UL) continue;
+                Out("Candidate RVA: "); Hex(Rva + Offset + I);
+                if (Offset + I >= 16UL && Offset + I + 16UL <= Size &&
+                    Read(Process, Base + Rva + Offset + I - 16UL,
+                         Context, sizeof(Context))) {
+                    Out(" context:");
+                    PrintBytes(Context, sizeof(Context));
+                }
+                Out("\r\n");
+            }
+        }
+    }
+    Out("Winlogon candidates: "); Decimal(Count); Out("\r\n");
+}
+
 static BOOL CheckImage(HANDLE Process, DWORD Base, DWORD PatchRva,
                        DWORD Timestamp, DWORD Checksum, DWORD Size,
                        const BYTE *Original, DWORD Pid, BOOL Nt4,
@@ -375,7 +413,11 @@ static BOOL CheckImage(HANDLE Process, DWORD Base, DWORD PatchRva,
     } else if (IsOriginal) {
         Out("Patch state: original\r\n");
     } else {
-        Out("Patch state: modified\r\nResult: FAILED\r\n");
+        Out("Patch state: unrecognized\r\n");
+        if (g_VisibleStatus)
+            ReportWinlogonCandidates(Process, Base, PeOffset, OptSize,
+                                     Sections, ImageSize, Original);
+        Out("Result: FAILED\r\n");
         return TRUE;
     }
 
@@ -620,7 +662,11 @@ BOOL NtpwrRemapAction(LPCSTR Action)
     CommandLine = Action;
     if (lstrcmpiA(CommandLine, "PATCH") == 0) g_Action = ACTION_PATCH;
     else if (lstrcmpiA(CommandLine, "RESTORE") == 0) g_Action = ACTION_RESTORE;
-    else if (lstrcmpiA(CommandLine, "STATUS") != 0) return FALSE;
+    else if (lstrcmpiA(CommandLine, "STATUS") != 0 &&
+             lstrcmpiA(CommandLine, "VERIFY") != 0) return FALSE;
+    g_VisibleStatus = lstrcmpiA(CommandLine, "STATUS") == 0;
+    if (g_VisibleStatus)
+        g_Stdout = GetStdHandle((DWORD)-11);
 
     Out("NTPWR - Winlogon remap\r\n");
     Out("Action: ");
