@@ -308,17 +308,21 @@ static BOOL ServiceState(SC_HANDLE m,BOOL *installed,BOOL *running) {
     *running=st.dwCurrentState==SERVICE_RUNNING;
     CloseServiceHandle(s);return TRUE;
 }
+static DWORD WritableAttributes(DWORD attr) {
+    attr&=~FILE_ATTRIBUTE_READONLY;
+    return attr?attr:FILE_ATTRIBUTE_NORMAL;
+}
 static BOOL CopyWritable(LPCSTR source,LPCSTR dest) {
     DWORD attr=GetFileAttributesA(dest);
     if(attr!=INVALID_FILE_ATTRIBUTES && (attr&FILE_ATTRIBUTE_READONLY) &&
-       !SetFileAttributesA(dest,attr&~FILE_ATTRIBUTE_READONLY)){
+       !SetFileAttributesA(dest,WritableAttributes(attr))){
         Error("SetFileAttributes");return FALSE;
     }
     if(!CopyFileA(source,dest,FALSE)){Error("CopyFile");return FALSE;}
     attr=GetFileAttributesA(dest);
     if(attr==INVALID_FILE_ATTRIBUTES){Error("GetFileAttributes");return FALSE;}
     if((attr&FILE_ATTRIBUTE_READONLY) &&
-       !SetFileAttributesA(dest,attr&~FILE_ATTRIBUTE_READONLY)){
+       !SetFileAttributesA(dest,WritableAttributes(attr))){
         Error("SetFileAttributes");return FALSE;
     }
     return TRUE;
@@ -326,7 +330,7 @@ static BOOL CopyWritable(LPCSTR source,LPCSTR dest) {
 static BOOL DeleteWritable(LPCSTR path) {
     DWORD attr=GetFileAttributesA(path);
     if(attr!=INVALID_FILE_ATTRIBUTES && (attr&FILE_ATTRIBUTE_READONLY) &&
-       !SetFileAttributesA(path,attr&~FILE_ATTRIBUTE_READONLY))return FALSE;
+       !SetFileAttributesA(path,WritableAttributes(attr)))return FALSE;
     return DeleteFileA(path);
 }
 static LPCSTR HookStatus(DWORD result) {
@@ -457,7 +461,9 @@ static BOOL QueryHook(PROBE *p) {
     if(report.Signature!=NTPWR_SIGNATURE || report.Size!=sizeof(report))return FALSE;
     p->backend=report.AcpiReady;
     p->hook_active=(report.Flags & NTPWR_FLAG_ARMED)!=0;
-    p->hook_result=report.Result;p->hook_checked=TRUE;
+    p->hook_result=report.Result==NTPWR_OK &&
+        !(report.Flags&NTPWR_FLAG_KNOWN)?NTPWR_NOT_VERIFIED:report.Result;
+    p->hook_checked=TRUE;
     return TRUE;
 }
 static BOOL HookArm(void) {
@@ -475,8 +481,9 @@ static BOOL HookArm(void) {
             }
             return FALSE;
         }
-        if(report.Result!=NTPWR_OK){
-            Fail(HookStatus(report.Result));
+        if(report.Result!=NTPWR_OK || !(report.Flags&NTPWR_FLAG_KNOWN)){
+            Fail(report.Result!=NTPWR_OK?HookStatus(report.Result):
+                 "Kernel profile not verified");
             return FALSE;
         }
     }
