@@ -316,7 +316,7 @@ static VOID ReportWinlogonCandidates(HANDLE Process, DWORD Base,
                                     DWORD SectionCount, DWORD ImageSize,
                                     const BYTE *Pattern)
 {
-    BYTE Header[40], Bytes[4100], Context[32];
+    BYTE Header[40], Bytes[1028], Context[32];
     DWORD S, Rva, Size, Offset, N, I, Count = 0;
     for (S = 0; S < SectionCount; ++S) {
         if (!Read(Process, Base + PeOffset + 24UL + OptSize + S * 40UL,
@@ -326,11 +326,11 @@ static VOID ReportWinlogonCandidates(HANDLE Process, DWORD Base,
         Size = Dword(Header, 8);
         if (Size < 5UL || Rva >= ImageSize || Size > ImageSize - Rva)
             continue;
-        for (Offset = 0; Offset + 5UL <= Size; Offset += 4096UL) {
+        for (Offset = 0; Offset + 5UL <= Size; Offset += 1024UL) {
             N = Size - Offset;
             if (N > sizeof(Bytes)) N = sizeof(Bytes);
             if (!Read(Process, Base + Rva + Offset, Bytes, N)) continue;
-            for (I = 0; I < 4096UL && I + 5UL <= N; ++I) {
+            for (I = 0; I < 1024UL && I + 5UL <= N; ++I) {
                 if (!SameBytes(Bytes + I, Pattern, 5UL)) continue;
                 ++Count;
                 if (Count > 8UL) continue;
