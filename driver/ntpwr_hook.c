@@ -27,16 +27,28 @@ static volatile LONG *g_Iat = NULL;
 static PV_FIRMWARE_FN g_Original = NULL;
 static BOOLEAN g_Armed = FALSE;
 static BOOLEAN g_IatInstalled = FALSE;
+static ULONG g_SerialBase = 0;
 static UNICODE_STRING g_DeviceName;
 static UNICODE_STRING g_SymbolicName;
 static VOID PvUnload(PDRIVER_OBJECT DriverObject);
 
+static VOID PvDebugByte(UCHAR Byte)
+{
+    ULONG Base = g_SerialBase;
+    ULONG Attempt;
+    WRITE_PORT_UCHAR((PUCHAR)(ULONG)PV_DEBUG_PORT, Byte);
+    if (Base == 0) return;
+    for (Attempt = 0; Attempt < 16384UL; ++Attempt) {
+        if (READ_PORT_UCHAR((PUCHAR)(ULONG)(Base + 5UL)) & 0x20U) {
+            WRITE_PORT_UCHAR((PUCHAR)(ULONG)Base, Byte);
+            return;
+        }
+    }
+}
+
 static VOID PvLog(const char *S)
 {
-    while (*S) {
-        WRITE_PORT_UCHAR((PUCHAR)(ULONG)PV_DEBUG_PORT, (UCHAR)*S);
-        ++S;
-    }
+    while (*S) PvDebugByte((UCHAR)*S++);
 }
 
 static VOID PvLogHex(ULONG V)
@@ -45,8 +57,35 @@ static VOID PvLogHex(ULONG V)
     int I;
     PvLog("0x");
     for (I = 7; I >= 0; --I)
-        WRITE_PORT_UCHAR((PUCHAR)(ULONG)PV_DEBUG_PORT,
-                         (UCHAR)H[(V >> (I * 4)) & 15UL]);
+        PvDebugByte((UCHAR)H[(V >> (I * 4)) & 15UL]);
+}
+
+static NTSTATUS PvConfigureSerial(ULONG Port)
+{
+    static const USHORT Bases[4] = {0x3F8, 0x2F8, 0x3E8, 0x2E8};
+    ULONG Base;
+    if (Port > 4UL) return STATUS_INVALID_DEVICE_REQUEST;
+    if (Port == 0) {
+        if (g_SerialBase != 0) PvLog("NTPWR: Serial debug disabled\r\n");
+        g_SerialBase = 0;
+        return STATUS_SUCCESS;
+    }
+    Base = Bases[Port - 1UL];
+    if (READ_PORT_UCHAR((PUCHAR)(ULONG)(Base + 5UL)) == 0xFFU)
+        return STATUS_NOT_SUPPORTED;
+    g_SerialBase = 0;
+    WRITE_PORT_UCHAR((PUCHAR)(ULONG)(Base + 1UL), 0);
+    WRITE_PORT_UCHAR((PUCHAR)(ULONG)(Base + 3UL), 0x80);
+    WRITE_PORT_UCHAR((PUCHAR)(ULONG)Base, 1);
+    WRITE_PORT_UCHAR((PUCHAR)(ULONG)(Base + 1UL), 0);
+    WRITE_PORT_UCHAR((PUCHAR)(ULONG)(Base + 3UL), 3);
+    WRITE_PORT_UCHAR((PUCHAR)(ULONG)(Base + 2UL), 7);
+    WRITE_PORT_UCHAR((PUCHAR)(ULONG)(Base + 4UL), 3);
+    g_SerialBase = Base;
+    PvLog("NTPWR: Serial debug enabled; base=");
+    PvLogHex(Base);
+    PvLog("\r\n");
+    return STATUS_SUCCESS;
 }
 
 void __cdecl NtpwrTraceAcpiStatus(const char *Stage, ULONG Status)
@@ -516,6 +555,11 @@ static NTSTATUS PvDispatch(PDEVICE_OBJECT DeviceObject, PIRP Irp)
             Status = PvArm((BOOLEAN)(Control == NTPWR_IOCTL_ARM_EXPERIMENTAL));
         } else if (Control == NTPWR_IOCTL_DISARM) {
             Status = PvDisarm();
+        } else if (Control == NTPWR_IOCTL_SERIAL_DEBUG) {
+            if (Stack->Parameters.DeviceIoControl.InputBufferLength != sizeof(ULONG))
+                Status = STATUS_BUFFER_TOO_SMALL;
+            else
+                Status = PvConfigureSerial(*(PULONG)Irp->AssociatedIrp.SystemBuffer);
         } else if (Control == NTPWR_IOCTL_PREPARE_S5) {
             if (Stack->Parameters.DeviceIoControl.OutputBufferLength <
                 sizeof(ULONG)) Status = STATUS_BUFFER_TOO_SMALL;

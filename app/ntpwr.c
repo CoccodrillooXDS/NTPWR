@@ -461,6 +461,29 @@ static BOOL KernelHook(DWORD action,NTPWR_REPORT *out) {
     CloseHandle(d);
     return ok;
 }
+static BOOL ConfigureSerial(LPCSTR action) {
+    DWORD port, count = 0;
+    LPCSTR name;
+    HANDLE device;
+    BOOL ok;
+    if (Equals(action,"SERIAL OFF")) {port=0;name="Off";}
+    else if (Equals(action,"SERIAL COM1")) {port=1;name="COM1";}
+    else if (Equals(action,"SERIAL COM2")) {port=2;name="COM2";}
+    else if (Equals(action,"SERIAL COM3")) {port=3;name="COM3";}
+    else if (Equals(action,"SERIAL COM4")) {port=4;name="COM4";}
+    else return FALSE;
+    device=CreateFileA("\\\\.\\NTPWR",GENERIC_READ|GENERIC_WRITE,
+                       FILE_SHARE_READ|FILE_SHARE_WRITE,NULL,OPEN_EXISTING,
+                       FILE_ATTRIBUTE_NORMAL,NULL);
+    if (!device || device==(HANDLE)-1) {Error("Open NTPWR");return FALSE;}
+    ok=DeviceIoControl(device,NTPWR_IOCTL_SERIAL_DEBUG,
+                       &port,sizeof(port),NULL,0,&count,NULL);
+    if (!ok) Error("Serial debug");
+    else {Print("Serial debug: ");Print(name);Print("\r\n");}
+    CloseHandle(device);
+    return ok;
+}
+
 static BOOL QueryHook(PROBE *p) {
     NTPWR_REPORT report;
     if(!KernelHook(NTPWR_IOCTL_QUERY,&report))return FALSE;
@@ -927,10 +950,16 @@ void __cdecl Entry(void){
         ok=NtpwrRemapAction("STATUS");
         CliExit(ok?0:1);
     }
+    if(Equals(arg,"SERIAL OFF")||Equals(arg,"SERIAL COM1")||
+       Equals(arg,"SERIAL COM2")||Equals(arg,"SERIAL COM3")||
+       Equals(arg,"SERIAL COM4")){
+        ok=ConfigureSerial(arg);
+        CliExit(ok?0:1);
+    }
     if(!Equals(arg,"INSTALL")&&!Equals(arg,"START")&&!Equals(arg,"STOP")&&
        !Equals(arg,"REMOVE")&&!Equals(arg,"STATUS")&&!Equals(arg,"SCAN")&&
        !Equals(arg,"INFO")&&!Equals(arg,"RESULT")){
-        Print("Usage: NTPWR [SCAN|INFO|WINLOGON|INSTALL|START|STATUS|STOP|REMOVE]\r\n");
+        Print("Usage: NTPWR [SCAN|INFO|WINLOGON|INSTALL|START|STATUS|STOP|REMOVE|SERIAL COM1-COM4|SERIAL OFF]\r\n");
         CliExit(2);
     }
     ResetFailure();
