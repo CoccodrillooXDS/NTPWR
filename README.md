@@ -80,7 +80,7 @@ NTPWR.EXE REMOVE
 
 `INSTALL` installs NTPWR or upgrades an older installation. `UPGRADE` explicitly upgrades an existing older version; both preserve the NTPWR service settings, including `SerialPort` and `AutoArm`. The GUI shows the installed driver version and offers **Upgrade** when it is older than the running utility. Upgrade requires matching installed driver and agent versions; incompatible installations must be removed manually. Run upgrades from a separate directory, not from `System32`.
 
-`SCAN` checks kernel and ACPI compatibility; unavailable ACPI S5 support is reported as an error. `INFO` shows driver diagnostics. A running driver with an active kernel hook cannot be unloaded normally. If command-line output is unavailable, inspect `NTPWR-CLI.LOG` in the current directory.
+`SCAN` checks kernel and ACPI compatibility; when ACPI S5 is unavailable and APM is not implemented, it reports a warning and returns a nonzero exit code. `INFO` shows driver diagnostics. A running driver with an active kernel hook cannot be unloaded normally. If command-line output is unavailable, inspect `NTPWR-CLI.LOG` in the current directory.
 
 `NTPWR.EXE SERIAL COM1` through `COM4` enable optional serial diagnostics (115200 8N1); `NTPWR.EXE SERIAL OFF` disables them. The setting is also configurable from the GUI. It is saved under the NTPWR service as the `SerialPort` DWORD (0–4) and restored when the driver loads. The selected serial port must not be in use by another device or driver. Debug output on I/O port `0xE9` remains enabled.
 
