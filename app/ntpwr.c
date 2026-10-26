@@ -1,5 +1,6 @@
 /* NTPWR installer and Winlogon-aware ACPI shutdown controller. */
 #include "../driver/ntpwr_hook.h"
+#include "../include/ntpwr_version.h"
 typedef unsigned long DWORD;
 typedef unsigned short WORD;
 typedef unsigned int UINT;
@@ -77,6 +78,11 @@ typedef LONG (__stdcall *DLGPROC)(HWND, UINT, WPARAM, LPARAM);
 #define BS_PUSHBUTTON 0UL
 #define BS_DEFPUSHBUTTON 1UL
 #define BS_GROUPBOX 7UL
+#define CBS_DROPDOWNLIST 3UL
+#define WS_VSCROLL 0x00200000UL
+#define CB_ADDSTRING 0x0143UL
+#define CB_GETCURSEL 0x0147UL
+#define CB_SETCURSEL 0x014EUL
 #define SS_LEFT 0UL
 #define MB_OK 0UL
 #define MB_ICONERROR 0x10UL
@@ -101,6 +107,10 @@ typedef LONG (__stdcall *DLGPROC)(HWND, UINT, WPARAM, LPARAM);
 #define IDC_HOOK 307
 #define IDC_MODE 308
 #define IDC_NAMESPACE 309
+#define IDC_SERIAL_PORT 401
+#define IDC_SERIAL_APPLY 402
+#define VERSION_SIGNATURE 0xFEEF04BDUL
+#define VERSION_BUFFER_LIMIT 32768UL
 
 struct SERVICE_STATUS {
     DWORD dwServiceType, dwCurrentState, dwControlsAccepted;
@@ -117,8 +127,10 @@ typedef struct PROBE {
     DWORD stage, init, load, ns, eval, count, a, b;
     DWORD error;
     DWORD backend;
-    BOOL hook_active,hook_checked;
+    BOOL hook_active,hook_checked,hook_verified;
     DWORD hook_result;
+    DWORD kernel_timestamp,kernel_checksum,kernel_image_size;
+    DWORD branch_matches,branch_address,iat_address,hal_target,hal_import;
 } PROBE;
 
 IMPORT HANDLE WINAPI GetStdHandle(DWORD);
@@ -135,6 +147,12 @@ IMPORT DWORD WINAPI GetFileAttributesA(LPCSTR);
 IMPORT BOOL WINAPI SetFileAttributesA(LPCSTR,DWORD);
 IMPORT void WINAPI Sleep(DWORD);
 IMPORT HANDLE WINAPI GetModuleHandleA(LPCSTR);
+IMPORT HANDLE WINAPI LoadLibraryA(LPCSTR);
+IMPORT BOOL WINAPI FreeLibrary(HANDLE);
+IMPORT LPVOID WINAPI GetProcAddress(HANDLE,LPCSTR);
+IMPORT HANDLE WINAPI GetProcessHeap(void);
+IMPORT LPVOID WINAPI HeapAlloc(HANDLE,DWORD,DWORD);
+IMPORT BOOL WINAPI HeapFree(HANDLE,DWORD,LPVOID);
 IMPORT BOOL WINAPI GetVersionExA(struct OSVERSIONINFOA *);
 IMPORT DWORD WINAPI RegOpenKeyExA(HANDLE, LPCSTR, DWORD, DWORD, HANDLE *);
 IMPORT DWORD WINAPI RegQueryValueExA(HANDLE, LPCSTR, LPDWORD, LPDWORD, BYTE *, LPDWORD);
@@ -160,6 +178,7 @@ extern BOOL NtpwrRemapAction(LPCSTR);
 IMPORT LONG WINAPI DialogBoxIndirectParamA(HANDLE, const void *, HWND, DLGPROC, LPARAM);
 IMPORT BOOL WINAPI EndDialog(HWND, LONG);
 IMPORT BOOL WINAPI SetDlgItemTextA(HWND, int, LPCSTR);
+IMPORT LONG WINAPI SendDlgItemMessageA(HWND,int,UINT,WPARAM,LPARAM);
 IMPORT HWND WINAPI GetDlgItem(HWND, int);
 IMPORT BOOL WINAPI EnableWindow(HWND, BOOL);
 IMPORT int WINAPI MessageBoxA(HWND, LPCSTR, LPCSTR, UINT);
@@ -174,6 +193,9 @@ static HANDLE g_FallbackLog = (HANDLE)-1;
 static BOOL g_CliMode = FALSE;
 static char g_LastFailure[180];
 static DWORD g_LastErrorCode;
+static BOOL g_InstalledVersionKnown = FALSE;
+static DWORD g_InstalledVersionMS, g_InstalledVersionLS;
+static DWORD g_SerialPort=0;
 
 
 static DWORD StringLength(LPCSTR s) { DWORD n=0; while(s[n]) ++n; return n; }
@@ -212,6 +234,7 @@ static void SetFailure(LPCSTR reason,DWORD code) {
 }
 static void Fail(LPCSTR reason) {
     SetFailure(reason,0);
+    if(g_CliMode)Print("Error: ");
     Print(reason);
     Print("\r\n");
 }
@@ -233,6 +256,7 @@ static void PrintDecimal(DWORD x) { char s[12];DecimalToText(x,s);Print(s); }
 static void Error(LPCSTR where) {
     DWORD code=GetLastError();
     SetFailure(where,code);
+    if(g_CliMode)Print("Error: ");
     Print(where);Print(" failed: ");PrintHex(code);Print("\r\n");
 }
 static void ShowFailure(HWND wnd,LPCSTR action) {
@@ -333,9 +357,90 @@ static BOOL DeleteWritable(LPCSTR path) {
        !SetFileAttributesA(path,WritableAttributes(attr)))return FALSE;
     return DeleteFileA(path);
 }
+typedef DWORD (WINAPI *GET_FILE_VERSION_SIZE)(LPCSTR,LPDWORD);
+typedef BOOL (WINAPI *GET_FILE_VERSION)(LPCSTR,DWORD,DWORD,LPVOID);
+typedef BOOL (WINAPI *QUERY_FILE_VERSION)(LPVOID,LPCSTR,LPVOID *,UINT *);
+
+static BOOL ReadVersion(LPCSTR path,DWORD type,DWORD *ms,DWORD *ls) {
+    HANDLE module=LoadLibraryA("VERSION.DLL"),heap;
+    GET_FILE_VERSION_SIZE sizeFn;
+    GET_FILE_VERSION infoFn;
+    QUERY_FILE_VERSION queryFn;
+    DWORD size,unused=0;
+    LPVOID buffer=NULL,info=NULL;
+    UINT length=0;
+    BOOL ok=FALSE;
+    const DWORD *fixed;
+    if(!module)return FALSE;
+    sizeFn=(GET_FILE_VERSION_SIZE)GetProcAddress(module,"GetFileVersionInfoSizeA");
+    infoFn=(GET_FILE_VERSION)GetProcAddress(module,"GetFileVersionInfoA");
+    queryFn=(QUERY_FILE_VERSION)GetProcAddress(module,"VerQueryValueA");
+    if(!sizeFn||!infoFn||!queryFn)goto done;
+    size=sizeFn(path,&unused);
+    if(size<52UL||size>VERSION_BUFFER_LIMIT)goto done;
+    heap=GetProcessHeap();
+    if(!heap)goto done;
+    buffer=HeapAlloc(heap,0,size);
+    if(!buffer)goto done;
+    if(infoFn(path,0,size,buffer)&&
+       queryFn(buffer,"\\",&info,&length)&&info&&length>=52U){
+        fixed=(const DWORD *)info;
+        if(fixed[0]==VERSION_SIGNATURE&&fixed[1]==0x00010000UL&&
+           fixed[9]==type){
+            *ms=fixed[2];*ls=fixed[3];ok=TRUE;
+        }
+    }
+    HeapFree(heap,0,buffer);
+done:
+    FreeLibrary(module);
+    return ok;
+}
+static BOOL InstalledVersion(DWORD *ms,DWORD *ls) {
+    char src[MAX_PATH],dst[MAX_PATH],agent[MAX_PATH];
+    DWORD agentMs,agentLs,n;
+    if(!Paths(src,dst))return FALSE;
+    n=GetSystemDirectoryA(agent,MAX_PATH);
+    if(!n||n>=MAX_PATH||!Append(agent,MAX_PATH,"\\NTPWR.EXE"))
+        return FALSE;
+    if(!ReadVersion(dst,3UL,ms,ls)||
+       !ReadVersion(agent,1UL,&agentMs,&agentLs))
+        return FALSE;
+    return *ms==agentMs && *ls==agentLs;
+}
+static DWORD CurrentVersionMS(void) {
+    return ((DWORD)NTPWR_VERSION_MAJOR<<16)|NTPWR_VERSION_MINOR;
+}
+static DWORD CurrentVersionLS(void) {
+    return ((DWORD)NTPWR_VERSION_PATCH<<16)|NTPWR_VERSION_BUILD;
+}
+static int VersionCompare(DWORD ms,DWORD ls) {
+    DWORD currentMs=CurrentVersionMS(),currentLs=CurrentVersionLS();
+    if(ms<currentMs)return -1;
+    if(ms>currentMs)return 1;
+    return ls<currentLs?-1:ls>currentLs?1:0;
+}
+static void VersionText(char *out,DWORD ms,DWORD ls) {
+    char number[12];
+    out[0]=0;
+    Append(out,100,"v");
+    DecimalToText(ms>>16,number);Append(out,100,number);
+    Append(out,100,".");
+    DecimalToText(ms&0xFFFFUL,number);Append(out,100,number);
+    Append(out,100,".");
+    DecimalToText(ls>>16,number);Append(out,100,number);
+    Append(out,100," build ");
+    DecimalToText(ls&0xFFFFUL,number);Append(out,100,number);
+}
+static BOOL RefreshInstalledVersion(BOOL installed) {
+    g_InstalledVersionKnown=FALSE;
+    if(!installed)return FALSE;
+    g_InstalledVersionKnown=InstalledVersion(&g_InstalledVersionMS,&g_InstalledVersionLS);
+    return g_InstalledVersionKnown;
+}
+
 static LPCSTR HookStatus(DWORD result) {
     switch(result){
-    case NTPWR_OK:return "Compatible";
+    case NTPWR_OK:return "Compatible (verified)";
     case NTPWR_BAD_KERNEL_BASE:
     case NTPWR_BAD_PE:
     case NTPWR_BAD_IMAGE:return "Unsupported kernel image";
@@ -344,7 +449,7 @@ static LPCSTR HookStatus(DWORD result) {
     case NTPWR_AMBIGUOUS_BRANCH:return "Ambiguous shutdown path";
     case NTPWR_BAD_IAT:
     case NTPWR_BAD_HAL_TARGET:return "HAL import not verified";
-    case NTPWR_NOT_VERIFIED:return "Kernel profile not verified";
+    case NTPWR_NOT_VERIFIED:return "HAL target not verified";
     case NTPWR_ALREADY_MODIFIED:return "HAL import already modified";
     case NTPWR_NO_ACPI_SHUTDOWN:return "ACPI S5 unavailable";
     default:return "Not supported";
@@ -368,12 +473,12 @@ static BOOL Install(SC_HANDLE m) {
         SERVICE_KERNEL_DRIVER,SERVICE_DEMAND_START,SERVICE_ERROR_NORMAL,
         "\\SystemRoot\\System32\\Drivers\\NTPWR.SYS",NULL,NULL,NULL,NULL,NULL);
     if(!s){Error("CreateService");DeleteWritable(dst);return FALSE;}
-    CloseServiceHandle(s);Print("Driver installed.\r\n");return TRUE;
+    CloseServiceHandle(s);return TRUE;
 }
 static BOOL Start(SC_HANDLE m) {
     SC_HANDLE s=Service(m);BOOL ok=FALSE;
     if(!s){Error("OpenService");return FALSE;}
-    if(StartServiceA(s,0,NULL)){Print("Driver loaded.\r\n");ok=TRUE;}
+    if(StartServiceA(s,0,NULL)){ok=TRUE;}
     else if(GetLastError()==ERROR_SERVICE_ALREADY_RUNNING){ok=TRUE;}
     else Error("StartService");
     CloseServiceHandle(s);return ok;
@@ -400,7 +505,6 @@ static BOOL Stop(SC_HANDLE m) {
     ok=TRUE;
 done:
     CloseServiceHandle(s);
-    if(ok)Print("Driver stopped.\r\n");
     return ok;
 }
 static BOOL Remove(SC_HANDLE m) {
@@ -413,16 +517,15 @@ static BOOL Remove(SC_HANDLE m) {
             Error("ControlService");goto done;
         }
         if(!WaitStopped(s)){Fail("Driver did not stop");goto done;}
-        Print("Driver stopped.\r\n");
     }
     if(!DeleteService(s)){Error("DeleteService");goto done;}
-    ok=TRUE;Print("Driver service removed.\r\n");
+    ok=TRUE;
 done:
     CloseServiceHandle(s);
     if(ok&&Paths(src,dst)){
         if(!DeleteWritable(dst)){
             Print("Warning: unable to delete driver file: ");PrintHex(GetLastError());Print("\r\n");
-        }else Print("Driver file removed.\r\n");
+        }
     }
     return ok;
 }
@@ -446,6 +549,16 @@ static BOOL ReadProbe(PROBE *p) {
         ReadDword(key,"S5TypeB",&p->b);
     RegCloseKey(key);return p->scanned;
 }
+static void ReadSerialPort(void) {
+    HANDLE key=NULL;
+    DWORD port=0;
+    g_SerialPort=0;
+    if(RegOpenKeyExA(HKEY_LOCAL_MACHINE,
+        "SYSTEM\\CurrentControlSet\\Services\\NTPWR",0,KEY_QUERY_VALUE,&key)!=0)
+        return;
+    if(ReadDword(key,"SerialPort",&port)&&port<=4UL)g_SerialPort=port;
+    RegCloseKey(key);
+}
 static BOOL KernelHook(DWORD action,NTPWR_REPORT *out) {
     HANDLE d=CreateFileA("\\\\.\\NTPWR",GENERIC_READ|GENERIC_WRITE,
         FILE_SHARE_READ|FILE_SHARE_WRITE,NULL,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,NULL);
@@ -458,14 +571,62 @@ static BOOL KernelHook(DWORD action,NTPWR_REPORT *out) {
     CloseHandle(d);
     return ok;
 }
+static BOOL ConfigureSerialPort(DWORD port) {
+    DWORD count=0, result;
+    HANDLE device,key=NULL;
+    BOOL ok;
+    static const LPCSTR names[5]={"Off","COM1","COM2","COM3","COM4"};
+    if(port>4UL)return FALSE;
+    device=CreateFileA("\\\\.\\NTPWR",GENERIC_READ|GENERIC_WRITE,
+                       FILE_SHARE_READ|FILE_SHARE_WRITE,NULL,OPEN_EXISTING,
+                       FILE_ATTRIBUTE_NORMAL,NULL);
+    if(!device||device==(HANDLE)-1){Error("Open NTPWR");return FALSE;}
+    ok=DeviceIoControl(device,NTPWR_IOCTL_SERIAL_DEBUG,
+                       &port,sizeof(port),NULL,0,&count,NULL);
+    if(!ok)Error("Serial debug");
+    CloseHandle(device);
+    if(!ok)return FALSE;
+    result=RegOpenKeyExA(HKEY_LOCAL_MACHINE,
+        "SYSTEM\\CurrentControlSet\\Services\\NTPWR",0,KEY_SET_VALUE,&key);
+    if(result==0){
+        result=RegSetValueExA(key,"SerialPort",0,REG_DWORD,
+                             (const BYTE *)&port,sizeof(port));
+        RegCloseKey(key);
+    }
+    if(result!=0){
+        SetFailure("Save serial setting",result);
+        Print("Serial setting not saved: ");PrintHex(result);Print("\r\n");
+        return FALSE;
+    }
+    g_SerialPort=port;
+    Print("Serial debug: ");Print(names[port]);Print(" (saved)\r\n");
+    return TRUE;
+}
+static BOOL ConfigureSerial(LPCSTR action) {
+    if(Equals(action,"SERIAL OFF"))return ConfigureSerialPort(0);
+    if(Equals(action,"SERIAL COM1"))return ConfigureSerialPort(1);
+    if(Equals(action,"SERIAL COM2"))return ConfigureSerialPort(2);
+    if(Equals(action,"SERIAL COM3"))return ConfigureSerialPort(3);
+    if(Equals(action,"SERIAL COM4"))return ConfigureSerialPort(4);
+    return FALSE;
+}
+
 static BOOL QueryHook(PROBE *p) {
     NTPWR_REPORT report;
     if(!KernelHook(NTPWR_IOCTL_QUERY,&report))return FALSE;
     if(report.Signature!=NTPWR_SIGNATURE || report.Size!=sizeof(report))return FALSE;
     p->backend=report.AcpiReady;
     p->hook_active=(report.Flags & NTPWR_FLAG_ARMED)!=0;
-    p->hook_result=report.Result==NTPWR_OK &&
-        !(report.Flags&NTPWR_FLAG_KNOWN)?NTPWR_NOT_VERIFIED:report.Result;
+    p->hook_result=report.Result;
+    p->hook_verified=(report.Flags&NTPWR_FLAG_KNOWN)!=0;
+    p->kernel_timestamp=report.KernelTimestamp;
+    p->kernel_checksum=report.KernelChecksum;
+    p->kernel_image_size=report.KernelImageSize;
+    p->branch_matches=report.BranchMatches;
+    p->branch_address=report.BranchAddress;
+    p->iat_address=report.IatAddress;
+    p->hal_target=report.HalTarget;
+    p->hal_import=report.HalImportFromTable;
     p->hook_checked=TRUE;
     return TRUE;
 }
@@ -476,17 +637,13 @@ static BOOL HookArm(void) {
         if(!report.AcpiReady){
             PROBE probe;
             if(ReadProbe(&probe) && probe.stage==1 && probe.init==6UL)
-                Fail("ACPI tables not found; APM not implemented");
+                Fail("No supported power-off backend (ACPI tables unavailable; APM not implemented)");
             else
-                Fail("ACPI S5 unavailable; APM not implemented");
-            if(report.Result!=NTPWR_OK){
-                Print("NTPWR: ");Print(HookStatus(report.Result));Print("\r\n");
-            }
+                Fail("No supported power-off backend (ACPI S5 unavailable; APM not implemented)");
             return FALSE;
         }
-        if(report.Result!=NTPWR_OK || !(report.Flags&NTPWR_FLAG_KNOWN)){
-            Fail(report.Result!=NTPWR_OK?HookStatus(report.Result):
-                 "Kernel profile not verified");
+        if(report.Result!=NTPWR_OK){
+            Fail(HookStatus(report.Result));
             return FALSE;
         }
     }
@@ -605,6 +762,150 @@ static BOOL AgentRemove(SC_HANDLE manager) {
     }
     CloseServiceHandle(service);return TRUE;
 }
+static BOOL StartInstalledAgent(SC_HANDLE manager) {
+    SC_HANDLE service=OpenServiceA(manager,"NTPWRAgent",
+                                   SERVICE_START|SERVICE_QUERY_STATUS);
+    DWORD error;
+    BOOL ok=FALSE;
+    if(!service){Error("OpenService(NTPWRAgent)");return FALSE;}
+    if(!StartServiceA(service,0,NULL)) {
+        error=GetLastError();
+        if(error!=ERROR_SERVICE_ALREADY_RUNNING){
+            Error("StartService(NTPWRAgent)");
+            goto done;
+        }
+    }
+    if(!WaitAgentState(service,SERVICE_RUNNING)){
+        Fail("NTPWRAgent failed to start");
+        goto done;
+    }
+    ok=TRUE;
+done:
+    CloseServiceHandle(service);
+    return ok;
+}
+static BOOL StopInstalledAgent(SC_HANDLE manager) {
+    SC_HANDLE service=OpenServiceA(manager,"NTPWRAgent",
+                                  SERVICE_STOP|SERVICE_QUERY_STATUS);
+    BOOL ok;
+    if(!service){Error("OpenService(NTPWRAgent)");return FALSE;}
+    ok=StopAgent(service);
+    CloseServiceHandle(service);
+    return ok;
+}
+static BOOL StartInstalledServices(SC_HANDLE manager) {
+    if(!Start(manager))return FALSE;
+    if(!HookArm())return FALSE;
+    return StartInstalledAgent(manager);
+}
+static BOOL UpgradeFull(SC_HANDLE manager) {
+    char srcSys[MAX_PATH],dstSys[MAX_PATH],srcExe[MAX_PATH],dstExe[MAX_PATH];
+    char backupSys[MAX_PATH],backupExe[MAX_PATH];
+    DWORD oldMs,oldLs,sourceMs,sourceLs,n;
+    BOOL found=FALSE,running=FALSE,stopped=FALSE;
+    BOOL sysBackup=FALSE,exeBackup=FALSE,filesChanged=FALSE;
+    BOOL newDriverStarted=FALSE,restored=TRUE;
+    SC_HANDLE conflict;
+    conflict=OpenServiceA(manager,"QEMUPWR",SERVICE_QUERY_STATUS);
+    if(conflict){CloseServiceHandle(conflict);Fail("Remove QEMUPWR before upgrading NTPWR");return FALSE;}
+    if(!ServiceState(manager,&found,&running)||!found){
+        Fail("NTPWR is not installed");return FALSE;
+    }
+    if(!InstalledVersion(&oldMs,&oldLs)){
+        Fail("Installed driver version unavailable or inconsistent");return FALSE;
+    }
+    if(VersionCompare(oldMs,oldLs)>=0){
+        Fail(VersionCompare(oldMs,oldLs)==0?
+             "NTPWR already up to date":"A newer NTPWR version is installed");
+        return FALSE;
+    }
+    if(!Paths(srcSys,dstSys)){Fail("Driver path unavailable");return FALSE;}
+    n=GetModuleFileNameA(NULL,srcExe,MAX_PATH);
+    if(!n||n>=MAX_PATH){Fail("Executable path unavailable");return FALSE;}
+    n=GetSystemDirectoryA(dstExe,MAX_PATH);
+    if(!n||n>=MAX_PATH||!Append(dstExe,MAX_PATH,"\\NTPWR.EXE")){
+        Fail("Agent path unavailable");return FALSE;
+    }
+    if(Equals(srcExe,dstExe)||Equals(srcSys,dstSys)){
+        Fail("Run the upgrade from a separate directory");return FALSE;
+    }
+    if(!ReadVersion(srcSys,3UL,&sourceMs,&sourceLs)||
+       sourceMs!=CurrentVersionMS()||sourceLs!=CurrentVersionLS()){
+        Fail("NTPWR executable and driver versions differ");return FALSE;
+    }
+    backupSys[0]=0; backupExe[0]=0;
+    if(!Append(backupSys,MAX_PATH,dstSys)||
+       !Append(backupSys,MAX_PATH,".BAK")||
+       !Append(backupExe,MAX_PATH,dstExe)||
+       !Append(backupExe,MAX_PATH,".BAK")){
+        Fail("Backup path unavailable");return FALSE;
+    }
+    if(GetFileAttributesA(backupSys)!=INVALID_FILE_ATTRIBUTES||
+       GetFileAttributesA(backupExe)!=INVALID_FILE_ATTRIBUTES){
+        Fail("Existing upgrade backups must be resolved first");return FALSE;
+    }
+    if(!StopInstalledAgent(manager))return FALSE;
+    if(!NtpwrRemapAction("VERIFY")){
+        Fail("Winlogon patch restoration not verified");
+        StartInstalledAgent(manager);
+        return FALSE;
+    }
+    if(running && !HookDisarm()){
+        StartInstalledAgent(manager);
+        return FALSE;
+    }
+    if(!Stop(manager)){
+        if(running)StartInstalledServices(manager);
+        return FALSE;
+    }
+    stopped=TRUE;
+    if(!CopyWritable(dstSys,backupSys)){
+        DeleteWritable(backupSys);
+        goto rollback;
+    }
+    sysBackup=TRUE;
+    if(!CopyWritable(dstExe,backupExe)){
+        DeleteWritable(backupExe);
+        goto rollback;
+    }
+    exeBackup=TRUE;
+    filesChanged=TRUE;
+    if(!CopyWritable(srcSys,dstSys)||!CopyWritable(srcExe,dstExe))
+        goto rollback;
+    if(!Start(manager))goto rollback;
+    newDriverStarted=TRUE;
+    if(!HookArm()||!StartInstalledAgent(manager))goto rollback;
+    if(!DeleteWritable(backupSys)||!DeleteWritable(backupExe))
+        Print("Warning: upgrade backup cleanup pending.\r\n");
+    Print("Upgrade completed.\r\n");
+    return TRUE;
+rollback:
+    if(newDriverStarted){
+        if(!StopInstalledAgent(manager)||!HookDisarm()||!Stop(manager)){
+            Fail("Upgrade rollback failed; backup files retained");
+            return FALSE;
+        }
+    }
+    if(stopped){
+        if(filesChanged){
+            restored=CopyWritable(backupSys,dstSys);
+            if(!CopyWritable(backupExe,dstExe))restored=FALSE;
+        }
+        if(!restored){
+            Fail("Upgrade rollback failed; backup files retained");
+            return FALSE;
+        }
+        if(sysBackup && !DeleteWritable(backupSys))
+            Print("Warning: driver backup cleanup pending.\r\n");
+        if(exeBackup && !DeleteWritable(backupExe))
+            Print("Warning: agent backup cleanup pending.\r\n");
+        if(!StartInstalledServices(manager)){
+            Fail("Previous NTPWR installation could not be restarted");
+            return FALSE;
+        }
+    }
+    return FALSE;
+}
 static BOOL EnableAutostart(SC_HANDLE manager) {
     HANDLE key=NULL;SC_HANDLE service;DWORD value=1,err;
     err=RegCreateKeyExA(HKEY_LOCAL_MACHINE,
@@ -624,6 +925,10 @@ static BOOL InstallFull(SC_HANDLE manager) {
     SC_HANDLE conflict=OpenServiceA(manager,"QEMUPWR",SERVICE_QUERY_STATUS);
     BOOL ok,agentRollbackSafe=TRUE;
     if(conflict){CloseServiceHandle(conflict);Fail("Remove QEMUPWR before installing NTPWR");return FALSE;}
+    if(!NtpwrRemapAction("VERIFY")){
+        Fail("Winlogon shutdown path not verified");
+        return FALSE;
+    }
     if(!Install(manager))return FALSE;
     if(!Start(manager))goto rollback;
     if(!HookArm())goto rollback;
@@ -636,6 +941,7 @@ static BOOL InstallFull(SC_HANDLE manager) {
         if(!AgentRemove(manager) || !HookDisarm())return FALSE;
         goto rollback;
     }
+    Print("Installation completed.\r\n");
     return TRUE;
 rollback:
     ok=Remove(manager);
@@ -649,7 +955,7 @@ static BOOL RemoveFull(SC_HANDLE manager) {
         return FALSE;
     }
     if(!ServiceState(manager,&found,&running))return FALSE;
-    if(!found){Print("NTPWR: not installed.\r\n");return TRUE;}
+    if(!found){Print("Not installed.\r\n");return TRUE;}
     if(running && !HookDisarm())return FALSE;
     if(!Remove(manager))return FALSE;
     {
@@ -657,13 +963,14 @@ static BOOL RemoveFull(SC_HANDLE manager) {
         if(n && n<MAX_PATH && Append(dest,MAX_PATH,"\\NTPWR.EXE"))
             if(!DeleteWritable(dest))Print("Warning: NTPWR.EXE cleanup pending.\r\n");
     }
+    Print("Uninstallation completed.\r\n");
     return TRUE;
 }
 static BOOL Scan(SC_HANDLE m,PROBE *p) {
     BOOL was_installed=FALSE,was_running=FALSE;
     BOOL temporary=FALSE,started=FALSE,ok=FALSE;
     p->scanned=FALSE;p->error=0;p->backend=0;p->hook_active=FALSE;
-    p->hook_checked=FALSE;p->hook_result=0;
+    p->hook_checked=FALSE;p->hook_verified=FALSE;p->hook_result=0;
     if(!ServiceState(m,&was_installed,&was_running))return FALSE;
     p->installed=was_installed;p->running=was_running;
     if(!was_installed){
@@ -676,7 +983,7 @@ static BOOL Scan(SC_HANDLE m,PROBE *p) {
     }
     ok=ReadProbe(p);
     if(ok)QueryHook(p);
-    if(!ok)Print("Probe results unavailable.\r\n");
+    if(!ok)Fail("ACPI probe results unavailable");
 cleanup:
     if(temporary){
         if(!Remove(m))ok=FALSE;
@@ -686,50 +993,76 @@ cleanup:
     p->installed=was_installed;p->running=was_running;
     return ok;
 }
-static void PrintProbe(const PROBE *p) {
-    Print("NTPWR: ACPI ");
-    if(!p->scanned)Print("not scanned\r\n");
-    else if(p->stage==1 && p->init==6UL)Print("not detected (ACPI tables unavailable)\r\n");
-    else if(p->stage==4){
-        Print("detected; AML ready; S5 package=");PrintDecimal(p->count);
+static void PrintProbe(const PROBE *p,BOOL detailed) {
+    if(p->hook_checked) {
+        Print("Kernel: ");
+        Print(p->hook_result==NTPWR_OK&&!p->hook_verified?
+              "Compatible (unverified)":HookStatus(p->hook_result));
+        Print("\r\n");
+    }else Print("Kernel: Not checked\r\n");
+    if(p->scanned&&p->stage==4&&p->backend)
+        Print("ACPI S5: Ready\r\n");
+    else if(p->scanned&&p->stage==1&&p->init==6UL)
+        Print("Warning: No supported power-off backend (ACPI tables unavailable; APM not implemented)\r\n");
+    else if(p->scanned)
+        Print("Warning: No supported power-off backend (ACPI S5 unavailable; APM not implemented)\r\n");
+    else
+        Print("ACPI S5: Not scanned\r\n");
+    if(!detailed)return;
+    if(p->scanned&&p->stage==4){
+        Print("S5 package=");PrintDecimal(p->count);
         Print(" slp_typa=");PrintDecimal(p->a);
         Print(" slp_typb=");PrintDecimal(p->b);Print("\r\n");
-    }else{
-        Print("probe incomplete; stage=");PrintDecimal(p->stage);
+    }else if(p->scanned){
+        Print("ACPI probe: stage=");PrintDecimal(p->stage);
         Print(" init=");PrintHex(p->init);
         Print(" load=");PrintHex(p->load);
         Print(" namespace=");PrintHex(p->ns);
         Print(" eval=");PrintHex(p->eval);Print("\r\n");
     }
-    Print("NTPWR: APM not implemented (not probed)\r\n");
-    Print("NTPWR: ACPI S5 ");Print(p->backend?"registers mapped\r\n":"not ready\r\n");
     if(p->hook_checked){
-        Print("NTPWR: Hook: ");Print(HookStatus(p->hook_result));Print("\r\n");
+        Print("Kernel timestamp=");PrintHex(p->kernel_timestamp);
+        Print(" checksum=");PrintHex(p->kernel_checksum);
+        Print(" size=");PrintHex(p->kernel_image_size);Print("\r\n");
+        Print("Shutdown branch=");PrintHex(p->branch_address);
+        Print(" matches=");PrintDecimal(p->branch_matches);
+        Print(" IAT=");PrintHex(p->iat_address);Print("\r\n");
+        Print("HAL target=");PrintHex(p->hal_target);
+        Print(" import=");PrintHex(p->hal_import);Print("\r\n");
     }
 }
+
 static BOOL Run(LPCSTR action) {
     SC_HANDLE m=Manager();BOOL ok=FALSE;
     if(!m)return FALSE;
-    if(Equals(action,"INSTALL")) {ok=InstallFull(m);}
+    if(Equals(action,"INSTALL")) {
+        BOOL found=FALSE,running=FALSE;
+        if(ServiceState(m,&found,&running))
+            ok=found?UpgradeFull(m):InstallFull(m);
+    }else if(Equals(action,"UPGRADE"))ok=UpgradeFull(m);
     else if(Equals(action,"START"))ok=Start(m);
     else if(Equals(action,"STOP"))ok=Stop(m);
     else if(Equals(action,"REMOVE"))ok=RemoveFull(m);
     else if(Equals(action,"SCAN")){
-        ok=Scan(m,&g_probe);PrintProbe(&g_probe);
-    }else if(Equals(action,"INFO")||Equals(action,"RESULT")){
+        ok=Scan(m,&g_probe);PrintProbe(&g_probe,FALSE);
+        if(ok&&(!g_probe.backend||!g_probe.hook_checked||
+                g_probe.hook_result!=NTPWR_OK))ok=FALSE;
+    }else if(Equals(action,"INFO")){
         BOOL found=FALSE,running=FALSE;
         if(ServiceState(m,&found,&running)&&found&&running){
             g_probe.installed=found;g_probe.running=running;
             ok=ReadProbe(&g_probe);
             if(ok)QueryHook(&g_probe);
-            PrintProbe(&g_probe);
+            PrintProbe(&g_probe,TRUE);
         }else{
-            ok=Scan(m,&g_probe);PrintProbe(&g_probe);
+            ok=Scan(m,&g_probe);PrintProbe(&g_probe,TRUE);
         }
+        if(ok&&(!g_probe.backend||!g_probe.hook_checked||
+                g_probe.hook_result!=NTPWR_OK))ok=FALSE;
     }else if(Equals(action,"STATUS")){
         BOOL found=FALSE,running=FALSE;
         ok=ServiceState(m,&found,&running);
-        if(ok){Print("NTPWR: ");Print(!found?"Not installed\r\n":running?"Running\r\n":"Stopped\r\n");}
+        if(ok)Print(!found?"Not installed\r\n":running?"Running\r\n":"Stopped\r\n");
     }
     CloseServiceHandle(m);return ok;
 }
@@ -747,7 +1080,8 @@ static void Begin(BYTE *buf,WORD count,WORD width,WORD height,LPCSTR name){
     D(0);W(count);W(0);W(0);W(width);W(height);W(0);W(0);T(name);
 }
 static const void *MainTemplate(void){
-    Begin((BYTE *)g_main_storage,15,274,164,"NT Power Management Driver");
+    Begin((BYTE *)g_main_storage,19,274,220,
+          "NT Power Management Driver - " NTPWR_VERSION_DISPLAY);
     Control(BS_GROUPBOX,8,7,258,120,20,0x80,"Status");
     Control(SS_LEFT,17,25,69,12,21,0x82,"Driver:");
     Control(SS_LEFT,91,25,165,12,IDC_DRIVER,0x82,"");
@@ -759,14 +1093,21 @@ static const void *MainTemplate(void){
     Control(SS_LEFT,91,82,165,12,IDC_METHOD,0x82,"");
     Control(SS_LEFT,17,101,69,12,25,0x82,"Power-off:");
     Control(SS_LEFT,91,101,165,12,IDC_POWER,0x82,"");
-    Control(BS_PUSHBUTTON|WS_TABSTOP,8,138,58,17,IDC_INSTALL,0x80,"Install");
-    Control(BS_PUSHBUTTON|WS_TABSTOP,74,138,65,17,IDC_REMOVE,0x80,"Uninstall");
-    Control(BS_PUSHBUTTON|WS_TABSTOP,147,138,56,17,IDC_INFO,0x80,"Info...");
-    Control(BS_DEFPUSHBUTTON|WS_TABSTOP,211,138,55,17,IDCANCEL,0x80,"Close");
+    Control(BS_GROUPBOX,8,133,258,49,40,0x80,"Serial diagnostics");
+    Control(SS_LEFT,17,154,65,12,41,0x82,"Output:");
+    Control(CBS_DROPDOWNLIST|WS_VSCROLL|WS_TABSTOP,
+            91,151,98,90,IDC_SERIAL_PORT,0x85,"");
+    Control(BS_PUSHBUTTON|WS_TABSTOP,199,152,58,17,
+            IDC_SERIAL_APPLY,0x80,"Apply");
+    Control(BS_PUSHBUTTON|WS_TABSTOP,8,194,58,17,IDC_INSTALL,0x80,"Install");
+    Control(BS_PUSHBUTTON|WS_TABSTOP,74,194,65,17,IDC_REMOVE,0x80,"Uninstall");
+    Control(BS_PUSHBUTTON|WS_TABSTOP,147,194,56,17,IDC_INFO,0x80,"Info...");
+    Control(BS_DEFPUSHBUTTON|WS_TABSTOP,211,194,55,17,IDCANCEL,0x80,"Close");
     return g_main_storage;
 }
 static const void *InfoTemplate(void){
-    Begin((BYTE *)g_info_storage,21,295,239,"NTPWR - Information");
+    Begin((BYTE *)g_info_storage,21,295,239,
+          "NTPWR - Information - " NTPWR_VERSION_DISPLAY);
     Control(BS_GROUPBOX,8,7,279,196,30,0x80,"Diagnostics");
     Control(SS_LEFT,16,24,72,12,31,0x82,"Windows:");
     Control(SS_LEFT,96,24,177,12,IDC_OS,0x82,"");
@@ -791,14 +1132,41 @@ static const void *InfoTemplate(void){
     return g_info_storage;
 }
 static void Text(HWND wnd,int id,LPCSTR val){SetDlgItemTextA(wnd,id,val);}
+static void InitializeSerial(HWND wnd){
+    static const LPCSTR names[5]={"Off","COM1","COM2","COM3","COM4"};
+    DWORD i;
+    for(i=0;i<5;++i)
+        SendDlgItemMessageA(wnd,IDC_SERIAL_PORT,CB_ADDSTRING,0,
+                            (LPARAM)names[i]);
+}
 static void UpdateMain(HWND wnd){
-    Text(wnd,IDC_DRIVER,g_probe.installed?(g_probe.running?"Running":"Installed (stopped)"):"Not installed");
+    char driver[100],version[100];
+    LPCSTR state=g_probe.running?"Running":"Stopped";
+    driver[0]=0;
+    if(!g_probe.installed) Append(driver,sizeof(driver),"Not installed");
+    else if(!g_InstalledVersionKnown){
+        Append(driver,sizeof(driver),state);
+        Append(driver,sizeof(driver)," (version unknown)");
+    }else{
+        VersionText(version,g_InstalledVersionMS,g_InstalledVersionLS);
+        Append(driver,sizeof(driver),state);
+        Append(driver,sizeof(driver)," (");
+        Append(driver,sizeof(driver),version);
+        Append(driver,sizeof(driver),")");
+    }
+    Text(wnd,IDC_DRIVER,driver);
     Text(wnd,IDC_ACPI,AcpiState(&g_probe));
     Text(wnd,IDC_APM,"Not implemented");
     Text(wnd,IDC_METHOD,g_probe.backend?"ACPI S5":"None");
     Text(wnd,IDC_POWER,g_probe.hook_active?"Enabled":g_probe.backend?"Disabled":"Unavailable");
-    EnableWindow(GetDlgItem(wnd,IDC_INSTALL),!g_probe.installed);
+    SetDlgItemTextA(wnd,IDC_INSTALL,g_probe.installed?"Upgrade":"Install");
+    EnableWindow(GetDlgItem(wnd,IDC_INSTALL),!g_probe.installed||
+        (g_InstalledVersionKnown&&
+         VersionCompare(g_InstalledVersionMS,g_InstalledVersionLS)<0));
     EnableWindow(GetDlgItem(wnd,IDC_REMOVE),g_probe.installed);
+    SendDlgItemMessageA(wnd,IDC_SERIAL_PORT,CB_SETCURSEL,g_SerialPort,0);
+    EnableWindow(GetDlgItem(wnd,IDC_SERIAL_PORT),g_probe.installed&&g_probe.running);
+    EnableWindow(GetDlgItem(wnd,IDC_SERIAL_APPLY),g_probe.installed&&g_probe.running);
 }
 static void MakeVersion(char *text){
     struct OSVERSIONINFOA v;char major[12],minor[12],build[12];
@@ -830,12 +1198,17 @@ static void UpdateInfo(HWND wnd){
     if(g_probe.scanned){HexToText(g_probe.ns,s);Text(wnd,IDC_NAMESPACE,s);}
     else Text(wnd,IDC_NAMESPACE,"Unavailable");
     Text(wnd,IDC_BACKEND,g_probe.backend?"ACPI S5 registers mapped":"No supported backend");
-    Text(wnd,IDC_HOOK,!g_probe.hook_checked?"Not scanned":g_probe.hook_active?"Active":HookStatus(g_probe.hook_result));
+    Text(wnd,IDC_HOOK,!g_probe.hook_checked?"Not scanned":
+         g_probe.hook_active?"Active":
+         g_probe.hook_result==NTPWR_OK&&!g_probe.hook_verified?
+         "Compatible (unverified)":HookStatus(g_probe.hook_result));
 }
 static BOOL Refresh(void){
     SC_HANDLE m=Manager();BOOL ok;
     if(!m)return FALSE;
     ok=Scan(m,&g_probe);
+    RefreshInstalledVersion(g_probe.installed);
+    ReadSerialPort();
     CloseServiceHandle(m);
     return ok;
 }
@@ -851,7 +1224,10 @@ static LONG WINAPI InfoDialog(HWND wnd,UINT msg,WPARAM w,LPARAM l){
 }
 static LONG WINAPI MainDialog(HWND wnd,UINT msg,WPARAM w,LPARAM l){
     (void)l;
-    if(msg==WM_INITDIALOG){Refresh();UpdateMain(wnd);return TRUE;}
+    if(msg==WM_INITDIALOG){
+        InitializeSerial(wnd);
+        Refresh();UpdateMain(wnd);return TRUE;
+    }
     if(msg==WM_CLOSE){EndDialog(wnd,0);return TRUE;}
     if(msg==WM_COMMAND){
         if((WORD)w==IDCANCEL){EndDialog(wnd,0);return TRUE;}
@@ -859,12 +1235,23 @@ static LONG WINAPI MainDialog(HWND wnd,UINT msg,WPARAM w,LPARAM l){
             DialogBoxIndirectParamA(GetModuleHandleA(NULL),InfoTemplate(),wnd,InfoDialog,0);
             return TRUE;
         }
+        if((WORD)w==IDC_SERIAL_APPLY){
+            LONG choice=SendDlgItemMessageA(wnd,IDC_SERIAL_PORT,CB_GETCURSEL,0,0);
+            ResetFailure();
+            if(choice>=0&&choice<=4&&!ConfigureSerialPort((DWORD)choice))
+                ShowFailure(wnd,"Serial configuration failed: ");
+            ReadSerialPort();UpdateMain(wnd);return TRUE;
+        }
         if((WORD)w==IDC_INSTALL){
             SC_HANDLE m;BOOL ok=FALSE;
             ResetFailure();
             m=Manager();
-            if(m){ok=InstallFull(m);CloseServiceHandle(m);}
-            if(!ok)ShowFailure(wnd,"Installation failed: ");
+            if(m){
+                ok=g_probe.installed?UpgradeFull(m):InstallFull(m);
+                CloseServiceHandle(m);
+            }
+            if(!ok)ShowFailure(wnd,g_probe.installed?
+                               "Upgrade failed: ":"Installation failed: ");
             Refresh();UpdateMain(wnd);return TRUE;
         }
         if((WORD)w==IDC_REMOVE){
@@ -891,10 +1278,36 @@ void __cdecl Entry(void){
         if(r==-1){Error("DialogBoxIndirectParam");ExitProcess(1);}
         ExitProcess(0);
     }
-    if(!Equals(arg,"INSTALL")&&!Equals(arg,"START")&&!Equals(arg,"STOP")&&
-       !Equals(arg,"REMOVE")&&!Equals(arg,"STATUS")&&!Equals(arg,"SCAN")&&
-       !Equals(arg,"INFO")&&!Equals(arg,"RESULT")){
-        Print("Usage: NTPWR [SCAN|INFO|INSTALL|START|STATUS|STOP|REMOVE]\r\n");
+    if(Equals(arg,"WINLOGON")){
+        ok=NtpwrRemapAction("STATUS");
+        CliExit(ok?0:1);
+    }
+    if(Equals(arg,"SERIAL OFF")||Equals(arg,"SERIAL COM1")||
+       Equals(arg,"SERIAL COM2")||Equals(arg,"SERIAL COM3")||
+       Equals(arg,"SERIAL COM4")){
+        ok=ConfigureSerial(arg);
+        CliExit(ok?0:1);
+    }
+    if(Equals(arg,"HELP")||Equals(arg,"-H")||Equals(arg,"--HELP")||
+       Equals(arg,"/?")){
+        Print("NTPWR " NTPWR_VERSION_DISPLAY "\r\n"
+              "Usage: NTPWR <command>\r\n\r\n"
+              "  SCAN          Check kernel and ACPI support\r\n"
+              "  INFO          Show driver diagnostics\r\n"
+              "  STATUS        Show driver state\r\n"
+              "  INSTALL       Install or upgrade NTPWR\r\n"
+              "  UPGRADE       Upgrade an existing installation\r\n"
+              "  REMOVE        Uninstall NTPWR\r\n"
+              "  SERIAL COM1-4 Enable serial diagnostics\r\n"
+              "  SERIAL OFF    Disable serial diagnostics\r\n"
+              "  HELP          Show this help\r\n");
+        CliExit(0);
+    }
+    if(!Equals(arg,"INSTALL")&&!Equals(arg,"UPGRADE")&&
+       !Equals(arg,"START")&&!Equals(arg,"STOP")&&
+       !Equals(arg,"REMOVE")&&!Equals(arg,"STATUS")&&
+       !Equals(arg,"SCAN")&&!Equals(arg,"INFO")){
+        Print("Error: Unknown command. Use NTPWR HELP.\r\n");
         CliExit(2);
     }
     ResetFailure();

@@ -14,6 +14,9 @@ extern void __stdcall NtpwrProbeCleanup(void);
 #define PV_NT351_STAMP 0x321A03D2UL
 #define PV_NT351_CHECK 0x000D3B29UL
 #define PV_NT351_SIZE  0x000BCD00UL
+#define PV_NT351_RTM_STAMP 0x2FC653BCUL
+#define PV_NT351_RTM_CHECK 0x000CEC3EUL
+#define PV_NT351_RTM_SIZE  0x000BBB80UL
 #define PV_NT4_STAMP   0x405977CDUL
 #define PV_NT4_CHECK   0x000EACFFUL
 #define PV_NT4_RUNTIME_SIZE_A 0x000E5000UL
@@ -27,16 +30,28 @@ static volatile LONG *g_Iat = NULL;
 static PV_FIRMWARE_FN g_Original = NULL;
 static BOOLEAN g_Armed = FALSE;
 static BOOLEAN g_IatInstalled = FALSE;
+static ULONG g_SerialBase = 0;
 static UNICODE_STRING g_DeviceName;
 static UNICODE_STRING g_SymbolicName;
 static VOID PvUnload(PDRIVER_OBJECT DriverObject);
 
+static VOID PvDebugByte(UCHAR Byte)
+{
+    ULONG Base = g_SerialBase;
+    ULONG Attempt;
+    WRITE_PORT_UCHAR((PUCHAR)(ULONG)PV_DEBUG_PORT, Byte);
+    if (Base == 0) return;
+    for (Attempt = 0; Attempt < 16384UL; ++Attempt) {
+        if (READ_PORT_UCHAR((PUCHAR)(ULONG)(Base + 5UL)) & 0x20U) {
+            WRITE_PORT_UCHAR((PUCHAR)(ULONG)Base, Byte);
+            return;
+        }
+    }
+}
+
 static VOID PvLog(const char *S)
 {
-    while (*S) {
-        WRITE_PORT_UCHAR((PUCHAR)(ULONG)PV_DEBUG_PORT, (UCHAR)*S);
-        ++S;
-    }
+    while (*S) PvDebugByte((UCHAR)*S++);
 }
 
 static VOID PvLogHex(ULONG V)
@@ -45,8 +60,35 @@ static VOID PvLogHex(ULONG V)
     int I;
     PvLog("0x");
     for (I = 7; I >= 0; --I)
-        WRITE_PORT_UCHAR((PUCHAR)(ULONG)PV_DEBUG_PORT,
-                         (UCHAR)H[(V >> (I * 4)) & 15UL]);
+        PvDebugByte((UCHAR)H[(V >> (I * 4)) & 15UL]);
+}
+
+static NTSTATUS PvConfigureSerial(ULONG Port)
+{
+    static const USHORT Bases[4] = {0x3F8, 0x2F8, 0x3E8, 0x2E8};
+    ULONG Base;
+    if (Port > 4UL) return STATUS_INVALID_DEVICE_REQUEST;
+    if (Port == 0) {
+        if (g_SerialBase != 0) PvLog("NTPWR: Serial debug disabled\r\n");
+        g_SerialBase = 0;
+        return STATUS_SUCCESS;
+    }
+    Base = Bases[Port - 1UL];
+    if (READ_PORT_UCHAR((PUCHAR)(ULONG)(Base + 5UL)) == 0xFFU)
+        return STATUS_NOT_SUPPORTED;
+    g_SerialBase = 0;
+    WRITE_PORT_UCHAR((PUCHAR)(ULONG)(Base + 1UL), 0);
+    WRITE_PORT_UCHAR((PUCHAR)(ULONG)(Base + 3UL), 0x80);
+    WRITE_PORT_UCHAR((PUCHAR)(ULONG)Base, 1);
+    WRITE_PORT_UCHAR((PUCHAR)(ULONG)(Base + 1UL), 0);
+    WRITE_PORT_UCHAR((PUCHAR)(ULONG)(Base + 3UL), 3);
+    WRITE_PORT_UCHAR((PUCHAR)(ULONG)(Base + 2UL), 7);
+    WRITE_PORT_UCHAR((PUCHAR)(ULONG)(Base + 4UL), 3);
+    g_SerialBase = Base;
+    PvLog("NTPWR: Serial debug enabled; base=");
+    PvLogHex(Base);
+    PvLog("\r\n");
+    return STATUS_SUCCESS;
 }
 
 void __cdecl NtpwrTraceAcpiStatus(const char *Stage, ULONG Status)
@@ -62,6 +104,25 @@ void __cdecl NtpwrTraceAcpiEvent(const char *Event)
 {
     PvLog("NTPWR: ACPI ");
     PvLog(Event);
+    PvLog("\r\n");
+}
+
+void __cdecl NtpwrTracePciWrite(ULONG Bus, ULONG Slot,
+                               ULONG Offset, ULONG Width,
+                               ULONG Value, ULONG Written)
+{
+    PvLog("NTPWR: PCI write bus=");
+    PvLogHex(Bus);
+    PvLog(" slot=");
+    PvLogHex(Slot);
+    PvLog(" offset=");
+    PvLogHex(Offset);
+    PvLog(" width=");
+    PvLogHex(Width);
+    PvLog(" value=");
+    PvLogHex(Value);
+    PvLog(" written=");
+    PvLogHex(Written);
     PvLog("\r\n");
 }
 
@@ -103,6 +164,89 @@ static BOOLEAN PvEqual(PUCHAR P, const char *S, ULONG Max)
     return FALSE;
 }
 
+static BOOLEAN PvEqualIgnoreCase(PUCHAR P, const char *S, ULONG Max)
+{
+    ULONG I;
+    for (I = 0; I < Max; ++I) {
+        UCHAR A = P[I], B = (UCHAR)S[I];
+        if (A >= 'A' && A <= 'Z') A += 'a' - 'A';
+        if (B >= 'A' && B <= 'Z') B += 'a' - 'A';
+        if (A != B) return FALSE;
+        if (B == 0) return TRUE;
+    }
+    return FALSE;
+}
+
+static BOOLEAN PvHalExportAt(ULONG ModuleBase, ULONG Target)
+{
+    PUCHAR Base = (PUCHAR)(ULONG)ModuleBase;
+    PUCHAR Nt, Opt, Export;
+    ULONG Offset, Size, ExpRva, ExpSize, NameRva;
+    ULONG Functions, Names, Ordinals, FunctionCount, NameCount;
+    ULONG I, Index, FunctionRva;
+
+    if (!PvMapped(Base, 0x100) || Pv16(Base) != 0x5A4D) return FALSE;
+    Offset = Pv32(Base + 0x3C);
+    if (Offset < 0x40 || Offset > 0x1000 ||
+        !PvMapped(Base + Offset, 0x100)) return FALSE;
+    Nt = Base + Offset;
+    Opt = Nt + 24;
+    if (Pv32(Nt) != 0x00004550UL || Pv16(Nt + 4) != 0x014C ||
+        Pv16(Nt + 20) < 0xE0 || Pv16(Opt) != 0x010B ||
+        Pv32(Opt + 92) == 0) return FALSE;
+    Size = Pv32(Opt + 56);
+    if (Size < 0x1000 || Size > 0x200000UL ||
+        Target < ModuleBase || Target - ModuleBase >= Size) return FALSE;
+    ExpRva = Pv32(Opt + 96);
+    ExpSize = Pv32(Opt + 100);
+    if (ExpSize < 40 || !PvRvaMapped(Base, Size, ExpRva, 40))
+        return FALSE;
+    Export = Base + ExpRva;
+    NameRva = Pv32(Export + 12);
+    if (!PvRvaMapped(Base, Size, NameRva, 8) ||
+        !PvEqualIgnoreCase(Base + NameRva, "HAL.dll", 8))
+        return FALSE;
+
+    FunctionCount = Pv32(Export + 20);
+    NameCount = Pv32(Export + 24);
+    Functions = Pv32(Export + 28);
+    Names = Pv32(Export + 32);
+    Ordinals = Pv32(Export + 36);
+    if (FunctionCount == 0 || FunctionCount > 4096 ||
+        NameCount == 0 || NameCount > FunctionCount ||
+        !PvRvaMapped(Base, Size, Functions, FunctionCount * 4UL) ||
+        !PvRvaMapped(Base, Size, Names, NameCount * 4UL) ||
+        !PvRvaMapped(Base, Size, Ordinals, NameCount * 2UL))
+        return FALSE;
+
+    for (I = 0; I < NameCount; ++I) {
+        NameRva = Pv32(Base + Names + I * 4UL);
+        if (!PvRvaMapped(Base, Size, NameRva, 20) ||
+            !PvEqual(Base + NameRva, "HalReturnToFirmware", 20))
+            continue;
+        Index = Pv16(Base + Ordinals + I * 2UL);
+        if (Index >= FunctionCount) return FALSE;
+        FunctionRva = Pv32(Base + Functions + Index * 4UL);
+        if (FunctionRva >= ExpRva &&
+            FunctionRva - ExpRva < ExpSize) return FALSE;
+        return FunctionRva < Size &&
+               ModuleBase + FunctionRva == Target;
+    }
+    return FALSE;
+}
+
+static BOOLEAN PvVerifyHalExport(ULONG Target)
+{
+    ULONG Page, I;
+    if (Target < 0x80000000UL) return FALSE;
+    Page = Target & ~0xFFFUL;
+    for (I = 0; I < 512 && Page >= 0x80000000UL; ++I) {
+        if (PvHalExportAt(Page, Target)) return TRUE;
+        Page -= 0x1000UL;
+    }
+    return FALSE;
+}
+
 static ULONG PvFindHalImport(PUCHAR Base, ULONG ImageSize, ULONG Opt)
 {
     ULONG ImportRva, ImportSize, Desc, N, Oft, First, NameRva, T;
@@ -122,7 +266,7 @@ static ULONG PvFindHalImport(PUCHAR Base, ULONG ImageSize, ULONG Opt)
         if (Oft == 0 && First == 0) break;
         if (Oft == 0 || First == 0) continue;
         if (!PvRvaMapped(Base, ImageSize, NameRva, 8)) continue;
-        if (!PvEqual(Base + NameRva, "HAL.dll", 8)) continue;
+        if (!PvEqualIgnoreCase(Base + NameRva, "HAL.dll", 8)) continue;
         for (T = 0; T < 512UL; ++T) {
             Lookup = Oft + T * 4UL;
             if (!PvRvaMapped(Base, ImageSize, Lookup, 4)) break;
@@ -198,6 +342,9 @@ static VOID PvScan(VOID)
     if ((g_Report.KernelTimestamp == PV_NT351_STAMP &&
          g_Report.KernelChecksum == PV_NT351_CHECK &&
          ImageSize == PV_NT351_SIZE) ||
+        (g_Report.KernelTimestamp == PV_NT351_RTM_STAMP &&
+         g_Report.KernelChecksum == PV_NT351_RTM_CHECK &&
+         ImageSize == PV_NT351_RTM_SIZE) ||
         (g_Report.KernelTimestamp == PV_NT4_STAMP &&
          g_Report.KernelChecksum == PV_NT4_CHECK &&
          (ImageSize == PV_NT4_RUNTIME_SIZE_A ||
@@ -290,8 +437,11 @@ static VOID PvScan(VOID)
         return;
     }
     if (!(g_Report.Flags & NTPWR_FLAG_KNOWN) && ImportSlot == 0) {
-        g_Report.Result = NTPWR_NOT_VERIFIED;
-        return;
+        if (!PvVerifyHalExport(g_Report.HalTarget)) {
+            g_Report.Result = NTPWR_NOT_VERIFIED;
+            return;
+        }
+        g_Report.Flags |= NTPWR_FLAG_HAL_EXPORT;
     }
     g_Report.Result = NTPWR_OK;
     g_Report.Flags |= NTPWR_FLAG_COMPATIBLE;
@@ -346,14 +496,15 @@ static NTSTATUS PvArm(BOOLEAN Experimental)
     if (g_Report.Result != NTPWR_OK ||
         !(g_Report.Flags & NTPWR_FLAG_COMPATIBLE))
         return STATUS_NOT_SUPPORTED;
-    if (!(g_Report.Flags & NTPWR_FLAG_KNOWN) && !Experimental)
+    if (!(g_Report.Flags & NTPWR_FLAG_KNOWN) &&
+        !(g_Report.Flags & NTPWR_FLAG_IMPORT) &&
+        !(g_Report.Flags & NTPWR_FLAG_HAL_EXPORT) &&
+        !(Experimental && (g_Report.Flags & NTPWR_FLAG_FILE_IMPORT)))
         return STATUS_NOT_SUPPORTED;
     if (g_Report.IatAddress == 0)
         return STATUS_NOT_SUPPORTED;
-    if (g_Report.AcpiReady == 0) {
-        g_Report.Result = NTPWR_NO_ACPI_SHUTDOWN;
+    if (g_Report.AcpiReady == 0)
         return STATUS_NOT_SUPPORTED;
-    }
 
     g_Iat = (volatile LONG *)(ULONG)g_Report.IatAddress;
     if ((ULONG)*g_Iat != g_Report.HalTarget) {
@@ -427,6 +578,11 @@ static NTSTATUS PvDispatch(PDEVICE_OBJECT DeviceObject, PIRP Irp)
             Status = PvArm((BOOLEAN)(Control == NTPWR_IOCTL_ARM_EXPERIMENTAL));
         } else if (Control == NTPWR_IOCTL_DISARM) {
             Status = PvDisarm();
+        } else if (Control == NTPWR_IOCTL_SERIAL_DEBUG) {
+            if (Stack->Parameters.DeviceIoControl.InputBufferLength != sizeof(ULONG))
+                Status = STATUS_BUFFER_TOO_SMALL;
+            else
+                Status = PvConfigureSerial(*(PULONG)Irp->AssociatedIrp.SystemBuffer);
         } else if (Control == NTPWR_IOCTL_PREPARE_S5) {
             if (Stack->Parameters.DeviceIoControl.OutputBufferLength <
                 sizeof(ULONG)) Status = STATUS_BUFFER_TOO_SMALL;
@@ -462,7 +618,8 @@ static VOID PvUnload(PDRIVER_OBJECT DriverObject)
     UNREFERENCED_PARAMETER(DriverObject);
 }
 
-static BOOLEAN PvAutoArmEnabled(PUNICODE_STRING RegistryPath)
+static BOOLEAN PvReadOption(PUNICODE_STRING RegistryPath,
+                            const WCHAR *Name, PULONG Data)
 {
     OBJECT_ATTRIBUTES Attributes;
     UNICODE_STRING ValueName;
@@ -471,27 +628,30 @@ static BOOLEAN PvAutoArmEnabled(PUNICODE_STRING RegistryPath)
     ULONG Size = 0;
     UCHAR Buffer[sizeof(KEY_VALUE_PARTIAL_INFORMATION) + sizeof(ULONG)];
     PKEY_VALUE_PARTIAL_INFORMATION Value;
-    BOOLEAN Enabled = FALSE;
+    BOOLEAN Found = FALSE;
 
     InitializeObjectAttributes(&Attributes, RegistryPath,
                                OBJ_CASE_INSENSITIVE, NULL, NULL);
     Status = ZwOpenKey(&Key, KEY_QUERY_VALUE, &Attributes);
     if (!NT_SUCCESS(Status)) return FALSE;
-    RtlInitUnicodeString(&ValueName, L"AutoArm");
+    RtlInitUnicodeString(&ValueName, Name);
     Status = ZwQueryValueKey(Key, &ValueName, KeyValuePartialInformation,
                              Buffer, sizeof(Buffer), &Size);
     if (NT_SUCCESS(Status)) {
         Value = (PKEY_VALUE_PARTIAL_INFORMATION)Buffer;
-        if (Value->Type == REG_DWORD && Value->DataLength == sizeof(ULONG))
-            Enabled = (*(PULONG)Value->Data == 1UL);
+        if (Value->Type == REG_DWORD && Value->DataLength == sizeof(ULONG)) {
+            *Data = *(PULONG)Value->Data;
+            Found = TRUE;
+        }
     }
     ZwClose(Key);
-    return Enabled;
+    return Found;
 }
 
 NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
 {
-    NTSTATUS Status;
+    NTSTATUS Status, ArmStatus;
+    ULONG SerialPort = 0, AutoArm = 0;
     RtlInitUnicodeString(&g_DeviceName, L"\\Device\\NTPWR");
     RtlInitUnicodeString(&g_SymbolicName, L"\\DosDevices\\NTPWR");
     Status = IoCreateDevice(DriverObject, 0, &g_DeviceName,
@@ -508,13 +668,27 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
     DriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = PvDispatch;
     g_Driver = DriverObject;
     DriverObject->DriverUnload = PvUnload;
+    if (PvReadOption(RegistryPath, L"SerialPort", &SerialPort) &&
+        SerialPort != 0 && SerialPort <= 4UL) {
+        if (!NT_SUCCESS(PvConfigureSerial(SerialPort)))
+            PvLog("NTPWR: Serial debug unavailable\r\n");
+    }
     (void)NtpwrProbeInitialize(DriverObject, RegistryPath);
     PvScan();
-    if (PvAutoArmEnabled(RegistryPath)) {
-        if (!NT_SUCCESS(PvArm(FALSE))) {
-            PvLog("NTPWR: Automatic hook failed; result=");
-            PvLogHex(g_Report.Result);
-            PvLog("\r\n");
+    if (PvReadOption(RegistryPath, L"AutoArm", &AutoArm) && AutoArm == 1UL) {
+        ArmStatus = PvArm(FALSE);
+        if (!NT_SUCCESS(ArmStatus)) {
+            if (!g_Report.AcpiReady)
+                PvLog("NTPWR: ERROR: ACPI S5 unavailable; hook not installed\r\n");
+            else {
+                PvLog("NTPWR: Automatic hook failed; status=");
+                PvLogHex((ULONG)ArmStatus);
+                if (g_Report.Result != NTPWR_OK) {
+                    PvLog(" result=");
+                    PvLogHex(g_Report.Result);
+                }
+                PvLog("\r\n");
+            }
         }
     }
     return STATUS_SUCCESS;

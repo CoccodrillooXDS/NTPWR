@@ -1,6 +1,10 @@
 #include <uacpi/kernel_api.h>
 #include "nt351_kernel_abi.h"
 
+extern void __cdecl NtpwrTracePciWrite(unsigned long, unsigned long,
+                                      unsigned long, unsigned long,
+                                      unsigned long, unsigned long);
+
 #define NT351_PCI_TAG 0x49504355UL
 #define NT351_PCI_CONFIG_BYTES 256U
 
@@ -67,22 +71,38 @@ uacpi_status __cdecl uacpi_kernel_pci_read32(
     return nt351_pci_read(handle, offset, 4, value);
 }
 
-/* Diagnostic profile: PCI configuration writes are not permitted. */
+static uacpi_status nt351_pci_write(
+    uacpi_handle handle, uacpi_size offset, uacpi_u32 width,
+    void *value)
+{
+    NT351_PCI_HANDLE *pci = (NT351_PCI_HANDLE *)handle;
+    NT351_U32 done;
+    if (!pci || !value || offset > NT351_PCI_CONFIG_BYTES ||
+        width > NT351_PCI_CONFIG_BYTES - offset || (offset & (width - 1U)))
+        return UACPI_STATUS_INVALID_ARGUMENT;
+    done = HalSetBusDataByOffset(NT351_PCI_CONFIGURATION, pci->bus,
+                                 pci->slot, value, (NT351_U32)offset, width);
+    NtpwrTracePciWrite(pci->bus, pci->slot, (NT351_U32)offset, width,
+                       width == 1 ? *(uacpi_u8 *)value :
+                       width == 2 ? *(uacpi_u16 *)value : *(uacpi_u32 *)value,
+                       done);
+    return done == width ? UACPI_STATUS_OK : UACPI_STATUS_NOT_FOUND;
+}
+
 uacpi_status __cdecl uacpi_kernel_pci_write8(
     uacpi_handle handle, uacpi_size offset, uacpi_u8 value)
 {
-    (void)handle; (void)offset; (void)value;
-    return UACPI_STATUS_DENIED;
+    return nt351_pci_write(handle, offset, 1, &value);
 }
+
 uacpi_status __cdecl uacpi_kernel_pci_write16(
     uacpi_handle handle, uacpi_size offset, uacpi_u16 value)
 {
-    (void)handle; (void)offset; (void)value;
-    return UACPI_STATUS_DENIED;
+    return nt351_pci_write(handle, offset, 2, &value);
 }
+
 uacpi_status __cdecl uacpi_kernel_pci_write32(
     uacpi_handle handle, uacpi_size offset, uacpi_u32 value)
 {
-    (void)handle; (void)offset; (void)value;
-    return UACPI_STATUS_DENIED;
+    return nt351_pci_write(handle, offset, 4, &value);
 }

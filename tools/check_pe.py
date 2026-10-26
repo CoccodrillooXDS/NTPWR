@@ -37,13 +37,15 @@ def check(path):
     at = resource_data.find(marker)
     assert at >= 0, f'{path}: invalid VERSIONINFO'
     file_ms, file_ls, product_ms, product_ls = struct.unpack_from('<IIII', resource_data, at + 8)
-    major, minor, patch = VERSION
-    expected = ((major << 16) | minor, patch << 16)
-    assert (file_ms, file_ls) == expected, f'{path}: FILEVERSION mismatch'
-    assert (product_ms, product_ls) == expected, f'{path}: PRODUCTVERSION mismatch'
-    assert f'{major}.{minor}.{patch}'.encode('utf-16le') in resource_data, f'{path}: missing version string'
+    major, minor, patch, build = VERSION
+    expected_file = ((major << 16) | minor, (patch << 16) | build)
+    expected_product = ((major << 16) | minor, patch << 16)
+    assert (file_ms, file_ls) == expected_file, f'{path}: FILEVERSION mismatch'
+    assert (product_ms, product_ls) == expected_product, f'{path}: PRODUCTVERSION mismatch'
+    assert f'{major}.{minor}.{patch}.{build}'.encode('utf-16le') in resource_data, f'{path}: missing file version string'
+    assert f'{major}.{minor}.{patch}'.encode('utf-16le') in resource_data, f'{path}: missing product version string'
     assert Path(path).name.upper().encode('utf-16le') in resource_data, f'{path}: wrong original filename'
     assert 'Copyright (c) 2026 CoccodrillooXDS'.encode('utf-16le') in resource_data, f'{path}: missing copyright'
-    print(f'PASS {Path(path).name}: PE32 i386, OS 3.51, subsystem={sub}, NTPWR {major}.{minor}.{patch}, size={len(data)}')
+    print(f'PASS {Path(path).name}: PE32 i386, OS 3.51, subsystem={sub}, NTPWR {major}.{minor}.{patch}.{build}, size={len(data)}')
 
 for filename in sys.argv[1:]: check(filename)

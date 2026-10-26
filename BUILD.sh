@@ -96,11 +96,54 @@ source = source.replace(marker, """uacpi_status ntpwr_uacpi_prepare_smi_cmd(void
 """ + marker)
 Path(sys.argv[2]).write_text(source)
 PY
+UACPI_SLEEP_SOURCE="$B/ntpwr_sleep.c"
+python3 - "$SRC/source/sleep.c" "$UACPI_SLEEP_SOURCE" <<'PY'
+from pathlib import Path
+import sys
+
+source = Path(sys.argv[1]).read_text()
+header = "#include <uacpi/platform/arch_helpers.h>\n"
+start = source.find("uacpi_status uacpi_prepare_for_sleep_state(")
+end = source.find("static uacpi_u8 make_hw_reduced_sleep_control(", start)
+if source.count(header) != 1 or start < 0 or end < 0:
+    raise SystemExit("Unsupported uACPI S5 preparation source")
+section = source[start:end]
+original_type = """    if (ret != UACPI_STATUS_OK)
+        return ret;
+
+    ret = get_slp_type_for_state(
+        0,"""
+traced_type = """    if (ret != UACPI_STATUS_OK) {
+        if (state == UACPI_SLEEP_STATE_S5)
+            NtpwrTraceAcpiStatus("S5 type evaluation", (unsigned long)ret);
+        return ret;
+    }
+
+    ret = get_slp_type_for_state(
+        0,"""
+original_pts = """    ret = eval_pts(state);
+    if (uacpi_unlikely_error(ret))
+        return ret;"""
+traced_pts = """    ret = eval_pts(state);
+    if (uacpi_unlikely_error(ret)) {
+        if (state == UACPI_SLEEP_STATE_S5)
+            NtpwrTraceAcpiStatus("S5 _PTS evaluation", (unsigned long)ret);
+        return ret;
+    }"""
+if section.count(original_type) != 1 or section.count(original_pts) != 1:
+    raise SystemExit("Unsupported uACPI S5 preparation layout")
+section = section.replace(original_type, traced_type).replace(original_pts, traced_pts)
+source = source[:start] + section + source[end:]
+source = source.replace(header, header +
+    "\nextern void __cdecl NtpwrTraceAcpiStatus(const char *, unsigned long);\n")
+Path(sys.argv[2]).write_text(source)
+PY
 UOBJS=()
 for name in "${SOURCES[@]}"; do
     unit="$SRC/source/$name.c"
     if [[ "$name" == uacpi ]]; then unit="$UACPI_S5_SOURCE"; fi
     if [[ "$name" == registers ]]; then unit="$UACPI_REGISTER_SOURCE"; fi
+    if [[ "$name" == sleep ]]; then unit="$UACPI_SLEEP_SOURCE"; fi
     "$CC" "${FLAGS[@]}" -DNTPWR_S5_ONLY -I "$SRC/include" -I "$SRC/source" \
         -c "$unit" -o "$B/$name.obj"
     UOBJS+=("$LINK_B/$name.obj")
@@ -144,6 +187,7 @@ EXPORTS
     WRITE_PORT_USHORT
     WRITE_PORT_ULONG
     HalGetBusDataByOffset
+    HalSetBusDataByOffset
 DEF
 cat > "$B/KERNEL32.DEF" <<'DEF'
 LIBRARY KERNEL32.DLL
@@ -162,6 +206,8 @@ EXPORTS
     SetFileAttributesA
     Sleep
     GetModuleHandleA
+    LoadLibraryA
+    FreeLibrary
     GetVersionExA
     CloseHandle
     CreateFileA
@@ -216,6 +262,7 @@ EXPORTS
     DialogBoxIndirectParamA
     EndDialog
     SetDlgItemTextA
+    SendDlgItemMessageA
     GetDlgItem
     EnableWindow
     MessageBoxA
@@ -239,7 +286,7 @@ done
 for import in READ_PORT_UCHAR:4 READ_PORT_USHORT:4 READ_PORT_ULONG:4 \
               WRITE_PORT_UCHAR:8 WRITE_PORT_USHORT:8 WRITE_PORT_ULONG:8 \
               KeQueryPerformanceCounter:4 KeStallExecutionProcessor:4 \
-              HalGetBusDataByOffset:24; do
+              HalGetBusDataByOffset:24 HalSetBusDataByOffset:24; do
     name="${import%:*}"; size="${import#*:}"
     aliases+=("/alternatename:__imp__${name}@${size}=__imp__${name}")
 done
@@ -262,13 +309,13 @@ done
 user_imports=(GetStdHandle:4 WriteFile:20 FreeConsole:0 GetLastError:0 ExitProcess:4
   GetCommandLineA:0 GetModuleFileNameA:12 GetSystemDirectoryA:8
   CopyFileA:12 DeleteFileA:4 GetFileAttributesA:4 SetFileAttributesA:8
-  Sleep:4 GetModuleHandleA:4 GetVersionExA:4
+  Sleep:4 GetModuleHandleA:4 LoadLibraryA:4 FreeLibrary:4 GetVersionExA:4
   CloseHandle:4 CreateFileA:28 DeviceIoControl:32 GetCurrentProcess:0
   GetProcAddress:8 GetProcessHeap:0 HeapAlloc:12 HeapFree:12 OpenProcess:12
   DuplicateHandle:28
   ReadProcessMemory:20 WriteProcessMemory:20 CreateEventA:16 ResetEvent:4
   SetEvent:4 WaitForSingleObject:8 SetLastError:4 lstrcmpiA:8 lstrlenA:4
-  DialogBoxIndirectParamA:20 EndDialog:8 SetDlgItemTextA:12 GetDlgItem:8 EnableWindow:8 MessageBoxA:16
+  DialogBoxIndirectParamA:20 EndDialog:8 SetDlgItemTextA:12 SendDlgItemMessageA:20 GetDlgItem:8 EnableWindow:8 MessageBoxA:16
   OpenSCManagerA:12 CreateServiceA:52
   OpenServiceA:12 StartServiceA:12 QueryServiceStatus:8 ControlService:12
   DeleteService:4 CloseServiceHandle:4 RegOpenKeyExA:20 RegQueryValueExA:24

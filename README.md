@@ -6,11 +6,13 @@ The ACPI S5 backend uses firmware-provided FADT registers and AML without QEMU-s
 
 ## Compatibility
 
+- **Windows NT 3.51 RTM (x86):** shutdown and restart on 86Box (ASUS P5A).
 - **Windows NT 3.51 SP5 (x86):** shutdown and restart on QEMU PIIX4.
 - **Windows NT 4.0 SP6 (x86):** shutdown and restart on QEMU PIIX4.
-- **Other NT versions:** unsupported until their kernel interfaces and shutdown paths have been validated.
+- **Other NT 3.51/4.0 builds:** potentially compatible when both kernel and Winlogon shutdown checks pass; not validated.
+- **Other NT versions:** not supported.
 
-The kernel hook recognizes specific NT 3.51 and NT 4.0 kernel profiles. The ACPI power-off path has been tested with QEMU PIIX4 firmware; compatibility with other ACPI firmware is not established. Unsupported configurations fall back to the original HAL.
+The kernel hook validates its shutdown call site and IAT, checking the named HAL import or the loaded HAL export when import names are unavailable. Winlogon patching requires a matching shutdown instruction sequence at a recognized image-relative location; other layouts are rejected. Structural matches on untested NT builds are not guaranteed compatible. The ACPI power-off path has been tested with QEMU PIIX4 and 86Box ASUS P5A firmware; compatibility with other ACPI firmware is not established. Unsupported configurations retain the original shutdown behavior.
 
 ## Components
 
@@ -62,25 +64,31 @@ Both binaries embed Windows version information from `include/ntpwr_version.h`.
 
 ## Usage
 
-Copy `NTPWR.EXE` and `NTPWR.SYS` from the same build into a directory on the target system. Remove QEMUPWR or an earlier NTPWR installation before installing NTPWR.
+Copy `NTPWR.EXE` and `NTPWR.SYS` from the same build into a directory on the target system. Remove QEMUPWR before installing NTPWR. An existing older NTPWR installation can be upgraded without removing its service settings.
 
 Run `NTPWR.EXE` to open the GUI, or use the command-line interface:
 
 ```cmd
+NTPWR.EXE HELP
 NTPWR.EXE SCAN
 NTPWR.EXE INFO
 NTPWR.EXE INSTALL
+NTPWR.EXE UPGRADE
 NTPWR.EXE STATUS
 NTPWR.EXE REMOVE
 ```
 
-`RESULT`, `START` and `STOP` are also available for diagnostics. A running driver with an active kernel hook cannot be unloaded normally. If command-line output is unavailable, inspect `NTPWR-CLI.LOG` in the current directory.
+`INSTALL` installs NTPWR or upgrades an older installation. `UPGRADE` explicitly upgrades an existing older version; both preserve the NTPWR service settings, including `SerialPort` and `AutoArm`. The GUI shows the installed driver version and offers **Upgrade** when it is older than the running utility. Upgrade requires matching installed driver and agent versions; incompatible installations must be removed manually. Run upgrades from a separate directory, not from `System32`.
+
+`SCAN` checks kernel and ACPI compatibility; when ACPI S5 is unavailable and APM is not implemented, it reports a warning and returns a nonzero exit code. `INFO` shows driver diagnostics. A running driver with an active kernel hook cannot be unloaded normally. If command-line output is unavailable, inspect `NTPWR-CLI.LOG` in the current directory.
+
+`NTPWR.EXE SERIAL COM1` through `COM4` enable optional serial diagnostics (115200 8N1); `NTPWR.EXE SERIAL OFF` disables them. The setting is also configurable from the GUI. It is saved under the NTPWR service as the `SerialPort` DWORD (0–4) and restored when the driver loads. The selected serial port must not be in use by another device or driver. Debug output on I/O port `0xE9` remains enabled.
 
 Use a VM snapshot when evaluating an untested operating system or firmware configuration.
 
 ## Limitations
 
-- FADT/GAS-based S5 power-off has been validated only on the listed QEMU guests, not on physical systems or other firmware.
+- FADT/GAS-based S5 power-off has been validated only on the listed virtual machines, not on physical systems or other firmware.
 - Winlogon triggers uACPI S5 preparation, including `_PTS(5)`, before the final HAL powerdown.
 - SCI/GPE event handling is omitted; this is not a general-purpose ACPI device driver.
 - The ACPI reset path supports FADT System I/O and System Memory registers; PCI Configuration resets retain the original HAL behavior.

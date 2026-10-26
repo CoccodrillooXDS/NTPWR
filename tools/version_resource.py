@@ -7,7 +7,7 @@ from pathlib import Path
 def version(path):
     source = Path(path).read_text()
     parts = []
-    for name in ('MAJOR', 'MINOR', 'PATCH'):
+    for name in ('MAJOR', 'MINOR', 'PATCH', 'BUILD'):
         match = re.search(r'^#define NTPWR_VERSION_' + name + r'\s+(\d+)\s*$', source, re.M)
         if not match:
             raise SystemExit(f'Missing NTPWR_VERSION_{name}')
@@ -39,12 +39,12 @@ def resource_header(data_size, type_id):
 
 
 def make_resource(parts, kind):
-    major, minor, patch = parts
-    file_version = f'{major}.{minor}.{patch}.0'
+    major, minor, patch, build = parts
+    file_version = f'{major}.{minor}.{patch}.{build}'
     product_version = f'{major}.{minor}.{patch}'
     exe = kind == 'exe'
     fixed = struct.pack('<13I', 0xFEEF04BD, 0x00010000,
-                        major << 16 | minor, patch << 16,
+                        major << 16 | minor, patch << 16 | build,
                         major << 16 | minor, patch << 16,
                         0x3F, 0, 0x00040004, 1 if exe else 3,
                         0 if exe else 7, 0, 0)

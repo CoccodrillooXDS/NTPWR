@@ -1,5 +1,7 @@
 #include <uacpi/kernel_api.h>
 
+extern void __cdecl NtpwrTraceAcpiEvent(const char *);
+
 uacpi_status __cdecl uacpi_kernel_install_interrupt_handler(
     uacpi_u32 irq, uacpi_interrupt_handler handler,
     uacpi_handle context, uacpi_handle *out_irq_handle)
@@ -23,5 +25,6 @@ uacpi_status __cdecl uacpi_kernel_handle_firmware_request(
     uacpi_firmware_request *request)
 {
     (void)request;
+    NtpwrTraceAcpiEvent("firmware request denied");
     return UACPI_STATUS_DENIED;
 }

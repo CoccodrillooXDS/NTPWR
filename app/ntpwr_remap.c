@@ -1,12 +1,12 @@
 #include "../include/ntpwr_win32.h"
 
 #define NT351_BASE  0x02160000UL
-#define NT351_PATCH 0x02164272UL
+#define NT351_PATCH_RVA 0x00004272UL
 #define NT351_STAMP 0x32275244UL
 #define NT351_CHECK 0x00038230UL
 #define NT351_SIZE  0x0002C000UL
 #define NT4_BASE    0x01000000UL
-#define NT4_PATCH   0x0100180CUL
+#define NT4_PATCH_RVA   0x0000180CUL
 #define NT4_STAMP   0x3B293B47UL
 #define NT4_CHECK   0x0003D41DUL
 #define NT4_SIZE    0x00033000UL
@@ -21,6 +21,8 @@
 #define SPI_MIN_SIZE 0x88UL
 #define LEGACY_STUB_LENGTH 22UL
 #define STUB_LENGTH 68UL
+#define RTM_STUB_LENGTH 71UL
+#define RTM_PATCH_LENGTH 8UL
 #define STUB_HANDLE_OFFSET 46UL
 #define STUB_FUNCTION_OFFSET 51UL
 #define STUB_JUMP_OFFSET 64UL
@@ -49,6 +51,7 @@
 #endif
 
 typedef LONG (WINAPI *NT_QUERY_SYSTEM_INFORMATION)(ULONG, PVOID, ULONG, PULONG);
+typedef LONG (WINAPI *NT_QUERY_INFORMATION_PROCESS)(HANDLE, ULONG, PVOID, ULONG, PULONG);
 typedef LONG (WINAPI *NT_ALLOCATE_VIRTUAL_MEMORY)(HANDLE, PVOID *, ULONG,
                                                     ULONG *, ULONG, ULONG);
 typedef LONG (WINAPI *NT_FREE_VIRTUAL_MEMORY)(HANDLE, PVOID *, ULONG *, ULONG);
@@ -65,6 +68,9 @@ static PROTECT_EX g_ProtectEx = NULL;
 static NT_FREE_VIRTUAL_MEMORY g_NtFree = NULL;
 static FLUSH_ICACHE g_Flush = NULL;
 static LPVOID g_NtDeviceIoControlFile = NULL;
+static NT_QUERY_INFORMATION_PROCESS g_QueryProcess = NULL;
+static BOOL g_Nt4 = FALSE;
+static BOOL g_VisibleStatus = FALSE;
 
 static void Out(const char *String)
 {
@@ -181,7 +187,7 @@ static void BuildLegacyStub(BYTE *Stub, DWORD StubAddress,
 }
 
 static void BuildStub(BYTE *Stub, DWORD StubAddress, DWORD PatchAddress,
-                      BOOL Nt4, DWORD RemoteHandle, DWORD NtIoctl)
+                      BOOL Nt4, BOOL Rtm, DWORD RemoteHandle, DWORD NtIoctl)
 {
     static const BYTE Template[STUB_LENGTH] = {
         0x8B,0x5C,0x24,0x14,0x9C,0x83,0xFB,0x05,0x75,0x33,
@@ -192,6 +198,17 @@ static void BuildStub(BYTE *Stub, DWORD StubAddress, DWORD PatchAddress,
         0x10,0x61,0x9D,0x53,0xE9,0,0,0,0
     };
     DWORD I;
+    if (Rtm) {
+        static const BYTE Prefix[] = {0x8B,0x74,0x24,0x10};
+        for (I = 0; I < sizeof(Prefix); ++I) Stub[I] = Prefix[I];
+        for (I = 0; I < 62UL; ++I) Stub[4UL + I] = Template[I];
+        Stub[66] = 0xE9;
+        StoreDword(Stub, STUB_HANDLE_OFFSET + 4UL, RemoteHandle);
+        StoreDword(Stub, STUB_FUNCTION_OFFSET + 4UL, NtIoctl);
+        StoreDword(Stub, 67UL, (PatchAddress + RTM_PATCH_LENGTH) -
+                            (StubAddress + RTM_STUB_LENGTH));
+        return;
+    }
     for (I = 0; I < STUB_LENGTH; ++I) Stub[I] = Template[I];
     if (Nt4) {
         Stub[1] = 0x74; Stub[3] = 0x18;
@@ -204,27 +221,32 @@ static void BuildStub(BYTE *Stub, DWORD StubAddress, DWORD PatchAddress,
 }
 
 static BOOL ReadVerifiedStub(HANDLE Process, DWORD PatchAddress,
-                             const BYTE *PatchBytes, BOOL Nt4,
+                             const BYTE *PatchBytes, BOOL Nt4, BOOL Rtm,
                              DWORD *StubAddress, DWORD *RemoteHandle,
                              BOOL *Modern)
 {
-    BYTE Actual[STUB_LENGTH], Expected[STUB_LENGTH];
-    DWORD Target;
+    BYTE Actual[RTM_STUB_LENGTH], Expected[RTM_STUB_LENGTH];
+    DWORD Target, Length = Rtm ? RTM_STUB_LENGTH : STUB_LENGTH;
+    DWORD HandleOffset = STUB_HANDLE_OFFSET + (Rtm ? 4UL : 0UL);
+    DWORD FunctionOffset = STUB_FUNCTION_OFFSET + (Rtm ? 4UL : 0UL);
     if (PatchBytes[0] != 0xE9) return FALSE;
+    if (Rtm && (PatchBytes[5] != 0x90 || PatchBytes[6] != 0x90 ||
+                PatchBytes[7] != 0x90)) return FALSE;
     Target = PatchAddress + 5UL + Dword(PatchBytes, 1);
     if (Target < 0x10000UL || Target >= 0x80000000UL) return FALSE;
-    if (!Read(Process, Target, Actual, STUB_LENGTH)) return FALSE;
+    if (!Read(Process, Target, Actual, Length)) return FALSE;
 
-    BuildStub(Expected, Target, PatchAddress, Nt4,
-              Dword(Actual, STUB_HANDLE_OFFSET),
-              Dword(Actual, STUB_FUNCTION_OFFSET));
-    if (SameBytes(Actual, Expected, STUB_LENGTH)) {
+    BuildStub(Expected, Target, PatchAddress, Nt4, Rtm,
+              Dword(Actual, HandleOffset),
+              Dword(Actual, FunctionOffset));
+    if (SameBytes(Actual, Expected, Length)) {
         *StubAddress = Target;
-        *RemoteHandle = Dword(Actual, STUB_HANDLE_OFFSET);
+        *RemoteHandle = Dword(Actual, HandleOffset);
         *Modern = TRUE;
         return TRUE;
     }
 
+    if (Rtm) return FALSE;
     BuildLegacyStub(Expected, Target, PatchAddress, Nt4);
     if (!SameBytes(Actual, Expected, LEGACY_STUB_LENGTH)) return FALSE;
     *StubAddress = Target;
@@ -288,18 +310,131 @@ static BOOL ReplaceCode(HANDLE Process, DWORD Address, const BYTE *NewBytes,
     return Success && ProtectionRestored;
 }
 
-static BOOL CheckImage(HANDLE Process, DWORD Base, DWORD Patch,
+static BOOL ExecutablePatch(HANDLE Process, DWORD Base, DWORD PeOffset,
+                            DWORD OptSize, DWORD Sections, DWORD PatchRva)
+{
+    BYTE Section[40];
+    DWORD I;
+    for (I = 0; I < Sections; ++I) {
+        DWORD Rva, Size;
+        if (!Read(Process, Base + PeOffset + 24UL + OptSize + I * 40UL,
+                  Section, sizeof(Section)))
+            return FALSE;
+        Rva = Dword(Section, 12);
+        Size = Dword(Section, 8);
+        if (Size < 5UL || PatchRva < Rva || PatchRva - Rva > Size - 5UL)
+            continue;
+        return (Dword(Section, 36) & 0x20000020UL) == 0x20000020UL;
+    }
+    return FALSE;
+}
+
+static VOID ReportWinlogonCandidates(HANDLE Process, DWORD Base,
+                                    DWORD PeOffset, DWORD OptSize,
+                                    DWORD SectionCount, DWORD ImageSize,
+                                    const BYTE *Pattern)
+{
+    BYTE Header[40], Bytes[1028], Context[32];
+    DWORD S, Rva, Size, Offset, N, I, Count = 0;
+    for (S = 0; S < SectionCount; ++S) {
+        if (!Read(Process, Base + PeOffset + 24UL + OptSize + S * 40UL,
+                  Header, sizeof(Header))) continue;
+        if ((Dword(Header, 36) & 0x20000020UL) != 0x20000020UL) continue;
+        Rva = Dword(Header, 12);
+        Size = Dword(Header, 8);
+        if (Size < 5UL || Rva >= ImageSize || Size > ImageSize - Rva)
+            continue;
+        for (Offset = 0; Offset + 5UL <= Size; Offset += 1024UL) {
+            N = Size - Offset;
+            if (N > sizeof(Bytes)) N = sizeof(Bytes);
+            if (!Read(Process, Base + Rva + Offset, Bytes, N)) continue;
+            for (I = 0; I < 1024UL && I + 5UL <= N; ++I) {
+                if (!SameBytes(Bytes + I, Pattern, 5UL)) continue;
+                ++Count;
+                if (Count > 8UL) continue;
+                Out("Candidate RVA: "); Hex(Rva + Offset + I);
+                if (Offset + I >= 16UL && Offset + I + 16UL <= Size &&
+                    Read(Process, Base + Rva + Offset + I - 16UL,
+                         Context, sizeof(Context))) {
+                    Out(" context:");
+                    PrintBytes(Context, sizeof(Context));
+                }
+                Out("\r\n");
+            }
+        }
+    }
+    Out("Winlogon candidates: "); Decimal(Count); Out("\r\n");
+}
+
+static DWORD FindRtmSelector(HANDLE Process, DWORD Base, DWORD PeOffset,
+                             DWORD OptSize, DWORD Sections, DWORD ImageSize)
+{
+    static const BYTE Code[] = {
+        0x8B,0x74,0x24,0x10,0x8B,0x5C,0x24,0x14,0x83,0x7E,0x40,0x0D
+    };
+    BYTE Header[40], Bytes[1036], Context[112];
+    DWORD S, Rva, Size, Offset, N, I, J, Found = 0, Matches = 0;
+    BOOL Cmp10, Cmp11, Original, Patched;
+
+    for (S = 0; S < Sections; ++S) {
+        if (!Read(Process, Base + PeOffset + 24UL + OptSize + S * 40UL,
+                  Header, sizeof(Header))) return 0;
+        if ((Dword(Header, 36) & 0x20000020UL) != 0x20000020UL)
+            continue;
+        Rva = Dword(Header, 12);
+        Size = Dword(Header, 8);
+        if (Size < sizeof(Code) + sizeof(Context) ||
+            Rva >= ImageSize || Size > ImageSize - Rva)
+            continue;
+        for (Offset = 0; Offset + sizeof(Code) <= Size; Offset += 1024UL) {
+            N = Size - Offset;
+            if (N > sizeof(Bytes)) N = sizeof(Bytes);
+            if (!Read(Process, Base + Rva + Offset, Bytes, N))
+                continue;
+            for (I = 0; I < 1024UL && I + sizeof(Code) <= N; ++I) {
+                if (!SameBytes(Bytes + I + 8UL, Code + 8UL, 4UL))
+                    continue;
+                Original = SameBytes(Bytes + I, Code, 8UL);
+                Patched = Bytes[I] == 0xE9 && Bytes[I + 5] == 0x90 &&
+                          Bytes[I + 6] == 0x90 && Bytes[I + 7] == 0x90;
+                if (!Original && !Patched) continue;
+                if (Offset + I + sizeof(Code) + sizeof(Context) > Size ||
+                    !Read(Process, Base + Rva + Offset + I + sizeof(Code),
+                          Context, sizeof(Context))) continue;
+                Cmp10 = FALSE;
+                Cmp11 = FALSE;
+                for (J = 0; J + 3 <= sizeof(Context); ++J) {
+                    if (Context[J] != 0x83 || Context[J + 1] != 0xFB)
+                        continue;
+                    if (Context[J + 2] == 0x0A) Cmp10 = TRUE;
+                    if (Context[J + 2] == 0x0B) Cmp11 = TRUE;
+                }
+                if (!Cmp10 || !Cmp11) continue;
+                ++Matches;
+                Found = Rva + Offset + I;
+                if (Matches > 1UL) return 0;
+            }
+        }
+    }
+    return Matches == 1UL ? Found : 0;
+}
+
+static BOOL CheckImage(HANDLE Process, DWORD Base, DWORD PatchRva,
                        DWORD Timestamp, DWORD Checksum, DWORD Size,
                        const BYTE *Original, DWORD Pid, BOOL Nt4,
                        const char *Name)
 {
     BYTE Dos[128];
     BYTE Nt[128];
-    BYTE Site[5];
-    BYTE Jump[5];
-    BYTE Stub[STUB_LENGTH];
-    BYTE Verify[STUB_LENGTH];
-    DWORD PeOffset;
+    static const BYTE RtmBytes[RTM_PATCH_LENGTH] = {
+        0x8B,0x74,0x24,0x10,0x8B,0x5C,0x24,0x14
+    };
+    BYTE Site[RTM_PATCH_LENGTH];
+    BYTE Jump[RTM_PATCH_LENGTH];
+    BYTE Stub[RTM_STUB_LENGTH];
+    BYTE Verify[RTM_STUB_LENGTH];
+    DWORD PeOffset, Patch, ImageSize, Sections, OptSize, PatchLength = 5UL;
+    BOOL Known, Rtm = FALSE;
     DWORD StubAddress = 0, RemoteHandle = 0;
     HANDLE DeviceHandle = INVALID_HANDLE_VALUE;
     BOOL IsOriginal;
@@ -316,25 +451,63 @@ static BOOL CheckImage(HANDLE Process, DWORD Base, DWORD Patch,
     if (PeOffset < 64UL || PeOffset > 0x1000UL) return FALSE;
     if (!Read(Process, Base + PeOffset, Nt, sizeof(Nt))) return FALSE;
     if (Dword(Nt, 0) != 0x00004550UL ||
-        Dword(Nt, 8) != Timestamp ||
-        Dword(Nt, 24 + 56) != Size ||
-        Dword(Nt, 24 + 64) != Checksum)
+        Word(Nt, 4) != 0x014CUL || Word(Nt, 24) != 0x010B)
         return FALSE;
+    Sections = Word(Nt, 6);
+    OptSize = Word(Nt, 20);
+    ImageSize = Dword(Nt, 24 + 56);
+    if (Sections == 0 || Sections > 32UL || OptSize < 0xE0UL ||
+        OptSize > 0x200UL || ImageSize < 0x10000UL ||
+        ImageSize > 0x400000UL)
+        return FALSE;
+    if (PatchRva > ImageSize - 5UL ||
+        !ExecutablePatch(Process, Base, PeOffset, OptSize, Sections, PatchRva)) {
+        if (g_VisibleStatus) {
+            Out("Winlogon: "); Out(Name);
+            Out("\r\nImage base: "); Hex(Base);
+            Out("\r\nExpected patch RVA unavailable\r\n");
+            ReportWinlogonCandidates(Process, Base, PeOffset, OptSize,
+                                     Sections, ImageSize, Original);
+        }
+        return FALSE;
+    }
+    Known = Dword(Nt, 8) == Timestamp &&
+            Dword(Nt, 24 + 64) == Checksum && ImageSize == Size;
+    if (!Nt4) {
+        BYTE Probe[5];
+        if (!Read(Process, Base + PatchRva, Probe, sizeof(Probe)))
+            return FALSE;
+        if (!SameBytes(Probe, Original, sizeof(Probe)) &&
+            Probe[0] != 0xE9) {
+            DWORD Found = FindRtmSelector(Process, Base, PeOffset, OptSize,
+                                           Sections, ImageSize);
+            if (Found != 0) {
+                PatchRva = Found;
+                Original = RtmBytes;
+                PatchLength = RTM_PATCH_LENGTH;
+                Rtm = TRUE;
+            }
+        }
+    }
+    Patch = Base + PatchRva;
 
     Out("Winlogon: "); Out(Name);
     Out("\r\nPID: "); Hex(Pid);
     Out("\r\nImage base: "); Hex(Base);
-    Out("\r\nPE timestamp: "); Hex(Timestamp);
-    Out("\r\nPE checksum: "); Hex(Checksum);
+    Out("\r\nPE timestamp: "); Hex(Dword(Nt, 8));
+    Out("\r\nPE checksum: "); Hex(Dword(Nt, 24 + 64));
+    Out("\r\nImage profile: "); Out(Known ? "verified" : "structural (unverified)");
+    Out("\r\nShutdown layout: "); Out(Rtm ? "NT 3.51 early" :
+                                (Nt4 ? "NT 4.0" : "NT 3.51 SP5-compatible"));
     Out("\r\nPatch address: "); Hex(Patch);
-    if (!Read(Process, Patch, Site, sizeof(Site))) {
+    if (!Read(Process, Patch, Site, PatchLength)) {
         Out("\r\nReadProcessMemory failed: "); Hex(GetLastError());
         Out("\r\nResult: FAILED\r\n");
         return TRUE;
     }
-    Out("\r\nPatch bytes:"); PrintBytes(Site, sizeof(Site)); Out("\r\n");
-    IsOriginal = SameBytes(Site, Original, sizeof(Site));
-    IsPatched = ReadVerifiedStub(Process, Patch, Site, Nt4,
+    Out("\r\nPatch bytes:"); PrintBytes(Site, PatchLength); Out("\r\n");
+    IsOriginal = SameBytes(Site, Original, PatchLength);
+    IsPatched = ReadVerifiedStub(Process, Patch, Site, Nt4, Rtm,
                                  &StubAddress, &RemoteHandle, &Modern);
     if (IsPatched) {
         Out("Patch state: installed; trampoline="); Hex(StubAddress);
@@ -342,11 +515,16 @@ static BOOL CheckImage(HANDLE Process, DWORD Base, DWORD Patch,
     } else if (IsOriginal) {
         Out("Patch state: original\r\n");
     } else {
-        Out("Patch state: modified\r\nResult: FAILED\r\n");
+        Out("Patch state: unrecognized\r\n");
+        if (g_VisibleStatus)
+            ReportWinlogonCandidates(Process, Base, PeOffset, OptSize,
+                                     Sections, ImageSize, Original);
+        Out("Result: FAILED\r\n");
         return TRUE;
     }
 
     if (g_Action == ACTION_STATUS) {
+        if (!g_VisibleStatus && !IsOriginal) return TRUE;
         g_Succeeded = TRUE;
         Out("STATUS complete.\r\n");
         return TRUE;
@@ -372,7 +550,7 @@ static BOOL CheckImage(HANDLE Process, DWORD Base, DWORD Patch,
         return TRUE;
     }
     if (g_Action == ACTION_RESTORE) {
-        if (ReplaceCode(Process, Patch, Original, Site, sizeof(Site))) {
+        if (ReplaceCode(Process, Patch, Original, Site, PatchLength)) {
             if (Modern && !CloseRemoteHandle(Process, RemoteHandle))
                 Out("Remote handle cleanup failed\r\n");
             g_Succeeded = TRUE;
@@ -431,12 +609,15 @@ static BOOL CheckImage(HANDLE Process, DWORD Base, DWORD Patch,
         return TRUE;
     }
     CloseHandle(DeviceHandle);
-    BuildStub(Stub, AllocAddress, Patch, Nt4, RemoteHandle,
+    BuildStub(Stub, AllocAddress, Patch, Nt4, Rtm, RemoteHandle,
               (DWORD)g_NtDeviceIoControlFile);
-    if (!WriteRemote(Process, AllocAddress, Stub, STUB_LENGTH) ||
-        !Read(Process, AllocAddress, Verify, STUB_LENGTH) ||
-        !SameBytes(Verify, Stub, STUB_LENGTH) ||
-        !g_Flush(Process, (LPCVOID)AllocAddress, STUB_LENGTH)) {
+    if (!WriteRemote(Process, AllocAddress, Stub,
+                     Rtm ? RTM_STUB_LENGTH : STUB_LENGTH) ||
+        !Read(Process, AllocAddress, Verify,
+              Rtm ? RTM_STUB_LENGTH : STUB_LENGTH) ||
+        !SameBytes(Verify, Stub, Rtm ? RTM_STUB_LENGTH : STUB_LENGTH) ||
+        !g_Flush(Process, (LPCVOID)AllocAddress,
+                 Rtm ? RTM_STUB_LENGTH : STUB_LENGTH)) {
         Out("Trampoline initialization failed: "); Hex(GetLastError());
         Out("\r\nResult: FAILED\r\n");
         CloseRemoteHandle(Process, RemoteHandle);
@@ -451,13 +632,14 @@ static BOOL CheckImage(HANDLE Process, DWORD Base, DWORD Patch,
     }
     Jump[0] = 0xE9;
     StoreDword(Jump, 1, AllocAddress - (Patch + 5UL));
-    if (!ReplaceCode(Process, Patch, Jump, Original, sizeof(Jump))) {
+    if (Rtm) Jump[5] = Jump[6] = Jump[7] = 0x90;
+    if (!ReplaceCode(Process, Patch, Jump, Original, PatchLength)) {
         Out("PATCH failed.\r\n");
         /* Retain the handle if the remote trampoline could still execute. */
         return TRUE;
     }
-    if (!Read(Process, Patch, Site, sizeof(Site)) ||
-        !ReadVerifiedStub(Process, Patch, Site, Nt4,
+    if (!Read(Process, Patch, Site, PatchLength) ||
+        !ReadVerifiedStub(Process, Patch, Site, Nt4, Rtm,
                           &StubAddress, &RemoteHandle, &Modern) || !Modern) {
         Out("PATCH verification failed.\r\n");
         return TRUE;
@@ -528,7 +710,8 @@ static BOOL InspectPid(DWORD Pid)
     static const BYTE NT351Bytes[5] = {0x8B, 0x5C, 0x24, 0x14, 0x53};
     static const BYTE NT4Bytes[5] = {0x8B, 0x74, 0x24, 0x18, 0x56};
     HANDLE Process;
-    DWORD Rights;
+    DWORD Rights, Base = 0, Basic[6], Returned = 0;
+    BYTE ImageBase[4];
     BOOL Found = FALSE;
 
     Rights = PROCESS_QUERY_INFORMATION | PROCESS_VM_READ;
@@ -540,12 +723,20 @@ static BOOL InspectPid(DWORD Pid)
         Out("\r\nResult: FAILED\r\n");
         return FALSE;
     }
-    Found = CheckImage(Process, NT351_BASE, NT351_PATCH, NT351_STAMP,
-                       NT351_CHECK, NT351_SIZE, NT351Bytes, Pid, FALSE,
-                       "NT 3.51") ||
-            CheckImage(Process, NT4_BASE, NT4_PATCH, NT4_STAMP,
-                       NT4_CHECK, NT4_SIZE, NT4Bytes, Pid, TRUE,
-                       "NT 4.0");
+    if (g_QueryProcess != NULL &&
+        g_QueryProcess(Process, 0, Basic, sizeof(Basic), &Returned) >= 0 &&
+        Basic[1] >= 0x10000UL && Basic[1] < 0x80000000UL &&
+        Read(Process, Basic[1] + 8UL, ImageBase, sizeof(ImageBase)))
+        Base = Dword(ImageBase, 0);
+    if (Base < 0x10000UL || Base >= 0x80000000UL ||
+        !Read(Process, Base, ImageBase, 2) ||
+        ImageBase[0] != 'M' || ImageBase[1] != 'Z')
+        Base = g_Nt4 ? NT4_BASE : NT351_BASE;
+    Found = g_Nt4 ?
+        CheckImage(Process, Base, NT4_PATCH_RVA, NT4_STAMP,
+                   NT4_CHECK, NT4_SIZE, NT4Bytes, Pid, TRUE, "NT 4.0") :
+        CheckImage(Process, Base, NT351_PATCH_RVA, NT351_STAMP,
+                   NT351_CHECK, NT351_SIZE, NT351Bytes, Pid, FALSE, "NT 3.51");
     if (!Found) Out("Winlogon image: unsupported\r\n");
     CloseHandle(Process);
     return Found;
@@ -578,21 +769,30 @@ BOOL NtpwrRemapAction(LPCSTR Action)
     CommandLine = Action;
     if (lstrcmpiA(CommandLine, "PATCH") == 0) g_Action = ACTION_PATCH;
     else if (lstrcmpiA(CommandLine, "RESTORE") == 0) g_Action = ACTION_RESTORE;
-    else if (lstrcmpiA(CommandLine, "STATUS") != 0) return FALSE;
+    else if (lstrcmpiA(CommandLine, "STATUS") != 0 &&
+             lstrcmpiA(CommandLine, "VERIFY") != 0) return FALSE;
+    g_VisibleStatus = lstrcmpiA(CommandLine, "STATUS") == 0;
+    if (g_VisibleStatus)
+        g_Stdout = GetStdHandle((DWORD)-11);
 
-    Out("NTPWR - Winlogon remap\r\n");
+    Out("Winlogon remap\r\n");
     Out("Action: ");
     Out(g_Action == ACTION_PATCH ? "PATCH" :
         (g_Action == ACTION_RESTORE ? "RESTORE" : "STATUS"));
     Out("\r\n");
     ZeroMemory(&Version, sizeof(Version));
     Version.dwOSVersionInfoSize = sizeof(Version);
-    if (GetVersionExA(&Version)) {
-        Out("Windows version: "); Decimal(Version.dwMajorVersion);
-        Out("."); Decimal(Version.dwMinorVersion);
-        Out(" build="); Decimal(Version.dwBuildNumber);
-        Out(" "); Out(Version.szCSDVersion); Out("\r\n");
+    if (!GetVersionExA(&Version) ||
+        !((Version.dwMajorVersion == 3UL && Version.dwMinorVersion == 51UL) ||
+          (Version.dwMajorVersion == 4UL && Version.dwMinorVersion == 0UL))) {
+        Out("Unsupported Windows version\r\n");
+        goto Done;
     }
+    g_Nt4 = Version.dwMajorVersion == 4UL;
+    Out("Windows version: "); Decimal(Version.dwMajorVersion);
+    Out("."); Decimal(Version.dwMinorVersion);
+    Out(" build="); Decimal(Version.dwBuildNumber);
+    Out(" "); Out(Version.szCSDVersion); Out("\r\n");
     DebugPrivilege();
     Kernel32 = GetModuleHandleA("kernel32.dll");
     if (Kernel32 != NULL) {
@@ -607,6 +807,8 @@ BOOL NtpwrRemapAction(LPCSTR Action)
                        Ntdll, "NtFreeVirtualMemory");
         g_NtDeviceIoControlFile =
             GetProcAddress(Ntdll, "NtDeviceIoControlFile");
+        g_QueryProcess = (NT_QUERY_INFORMATION_PROCESS)GetProcAddress(
+            Ntdll, "NtQueryInformationProcess");
     }
     Out("NtAllocateVirtualMemory: "); Out(g_NtAllocate ? "available\r\n" : "unavailable\r\n");
     Out("NtFreeVirtualMemory: "); Out(g_NtFree ? "available\r\n" : "unavailable\r\n");
